@@ -1,0 +1,534 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #151515;
+  color: #eee;
+  font-family: Arial, sans-serif;
+}
+
+button,
+input {
+  font-family: Arial, sans-serif;
+}
+
+main {
+  width: 700px;
+  max-width: calc(100% - 30px);
+  margin: 30px auto;
+}
+
+/* Header */
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+header b {
+  font-size: 20px;
+}
+
+header span {
+  color: #aaa;
+}
+
+.stats {
+  display: flex;
+  gap: 20px;
+  align-items: center;
+  font-size: 14px;
+}
+
+.stats strong {
+  color: white;
+}
+
+.lives {
+  color: #35b8a6 !important;
+  font-size: 17px;
+}
+
+/* Game */
+
+.card {
+  background: #202020;
+  border: 1px solid #3a3a3a;
+  padding: 25px;
+}
+
+.top {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+}
+
+.top small {
+  display: block;
+}
+
+small,
+label {
+  color: #999;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 5px 0 0;
+  font-size: 28px;
+}
+
+/* Timer */
+
+.timer {
+  margin-top: 5px;
+  font-size: 30px;
+  font-weight: bold;
+}
+
+.timer.danger {
+  color: #e74c3c;
+}
+
+/* Prompt */
+
+.prompt {
+  text-align: center;
+  margin: 35px 0;
+  padding: 25px 0;
+  border-top: 1px solid #3a3a3a;
+  border-bottom: 1px solid #3a3a3a;
+}
+
+.prompt small {
+  display: block;
+}
+
+.prompt strong {
+  display: block;
+  margin: 8px 0;
+  color: #35b8a6;
+  font-size: 55px;
+  letter-spacing: 5px;
+}
+
+.prompt p {
+  margin: 0;
+  color: #999;
+  font-size: 13px;
+}
+
+/* Input */
+
+label {
+  display: block;
+  margin-bottom: 7px;
+}
+
+.entry {
+  display: flex;
+  gap: 8px;
+}
+
+.entry input {
+  flex: 1;
+  min-width: 0;
+  height: 45px;
+  padding: 0 12px;
+  background: #111;
+  border: 1px solid #44444400;
+  color: white;
+  outline: none;
+  font-size: 16px;
+}
+
+.entry input:focus {
+  border-color: #35b8a6;
+}
+
+.entry button,
+.gameover button {
+  border: 0;
+  background: #35b8a6;
+  color: #111;
+  padding: 0 20px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.entry button:hover,
+.gameover button:hover {
+  background: #43cbb8;
+}
+
+.message {
+  height: 20px;
+  margin-top: 8px;
+  color: #aaa;
+  font-size: 12px;
+}
+
+/* Divider */
+
+.divider {
+  height: 1px;
+  background: #3a3a3a00;
+  margin: 30px 0;
+}
+
+/* Alphabet */
+
+.section-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: end;
+  margin-bottom: 12px;
+}
+
+.section-heading h2 {
+  margin: 5px 0 0;
+  font-size: 18px;
+}
+
+.section-heading > strong {
+  color: #aaa;
+  font-size: 13px;
+}
+
+.alphabet {
+  display: grid;
+  grid-template-columns: repeat(13, 1fr);
+}
+
+.alphabet span {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 35px;
+  border: 1px solid #333;
+  color: #555;
+  font-size: 12px;
+}
+
+.alphabet span.complete {
+  background: #173b37;
+  color: #35b8a6;
+}
+
+.rule {
+  color: #777;
+  font-size: 12px;
+  line-height: 1.5;
+  margin-bottom: 0;
+}
+
+/* Game over */
+
+.results-screen {
+  width: 100%;
+}
+
+.results-header {
+  text-align: center;
+  padding: 10px 0 25px;
+}
+
+.results-header h2 {
+  margin: 8px 0 0;
+  font-size: 50px;
+}
+
+.results-header p {
+  color: #999;
+  margin: 5px 0 0;
+}
+
+/* Final stats */
+
+.final-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 25px;
+}
+
+.stat-box {
+  padding: 15px 10px;
+  background: #151515;
+  border: 1px solid #333;
+  text-align: center;
+}
+
+.stat-box small {
+  display: block;
+  margin-bottom: 7px;
+}
+
+.stat-box strong {
+  font-size: 18px;
+}
+
+/* Missed prompts */
+
+.missed {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid #3a3a3a;
+}
+
+.missed > small {
+  display: block;
+  margin-bottom: 5px;
+}
+
+.missed-item {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  padding: 10px 0;
+  border-bottom: 1px solid #303030;
+  font-size: 12px;
+}
+
+.missed-item strong {
+  min-width: 40px;
+  color: #35b8a6;
+}
+
+.missed-item span {
+  color: #888;
+}
+
+.no-missed {
+  color: #35b8a6 !important;
+  text-align: center;
+  font-size: 12px;
+}
+
+/* New game settings */
+
+.new-game-settings {
+  margin-top: 25px;
+}
+
+.settings-title {
+  margin-bottom: 20px;
+}
+
+.settings-title h2 {
+  margin: 5px 0 0;
+  font-size: 18px;
+}
+
+/* Individual setting */
+
+.setting {
+  margin-bottom: 20px;
+}
+
+.setting > small {
+  display: block;
+  margin-bottom: 7px;
+}
+
+/* Selectable options */
+
+.option-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.option {
+  min-height: 55px;
+  padding: 10px;
+  background: #151515;
+  border: 1px solid #3a3a3a;
+  color: #999;
+  cursor: pointer;
+  text-align: left;
+}
+
+.option:hover {
+  border-color: #555;
+  color: #eee;
+}
+
+.option strong {
+  display: block;
+  color: inherit;
+  font-size: 13px;
+}
+
+.option span {
+  display: block;
+  margin-top: 4px;
+  color: #666;
+  font-size: 10px;
+}
+
+.option.selected {
+  background: #173b37;
+  border-color: #35b8a6;
+  color: #35b8a6;
+}
+
+.option.selected span {
+  color: #78aaa3;
+}
+
+/* Time buttons */
+
+.time-options {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.time-options .option {
+  min-height: 45px;
+  text-align: center;
+}
+
+/* Timed / Zen */
+
+.mode-options {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.mode-options .option {
+  text-align: center;
+}
+
+/* Play again */
+
+.play-again {
+  width: 100%;
+  height: 45px;
+  margin-top: 5px;
+  border: 0;
+  background: #35b8a6;
+  color: #111;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.play-again:hover {
+  background: #43cbb8;
+}
+
+/* Zen finish button */
+
+.finish-button {
+  margin-top: 8px;
+  padding: 7px 12px;
+  background: transparent;
+  border: 1px solid #444;
+  color: #888;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.finish-button:hover {
+  border-color: #35b8a6;
+  color: #35b8a6;
+}
+/* Start screen */
+
+.start-screen {
+  width: 100%;
+}
+
+.start-screen .results-header {
+  padding-bottom: 20px;
+}
+
+.start-screen .results-header h2 {
+  font-size: 36px;
+}
+
+.start-screen .results-header p {
+  max-width: 420px;
+  margin: 8px auto 0;
+  line-height: 1.5;
+}
+
+/* Instructions */
+
+.instructions {
+  margin-top: 10px;
+}
+
+.instruction {
+  display: flex;
+  gap: 15px;
+  padding: 13px 0;
+  border-bottom: 1px solid #303030;
+}
+
+.instruction > strong {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  background: #173b37;
+  color: #35b8a6;
+  font-size: 12px;
+}
+
+.instruction b {
+  display: block;
+  color: #eee;
+  font-size: 13px;
+}
+
+.instruction p {
+  margin: 4px 0 0;
+  color: #777;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* Start button */
+
+.start-button {
+  margin-top: 10px;
+}
+
+/* Lowercase start/results labels */
+
+.start-screen small,
+.results-screen small {
+  text-transform: lowercase;
+}
+/* Mobile */
+
+@media (max-width: 600px) {
+  .final-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .option-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .time-options {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .mode-options {
+    grid-template-columns: 1fr;
+  }
+
+  .missed-item {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+  }
+}
