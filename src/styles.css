@@ -33,6 +33,92 @@ header b {
   font-size: 20px;
 }
 
+.rules-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-left: 8px;
+  padding: 0;
+
+  border-radius: 50%;
+  background: #35b8a6;
+  color: #111;
+  font-size: 14px;
+  font-weight: bold;
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+.rules-button:hover {
+  color: #111;
+
+  background-color: #43cbb8;
+}
+
+.rules-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.7);
+  z-index: 100;
+}
+
+.rules-modal {
+  position: relative;
+  width: 100%;
+  max-width: 500px;
+  max-height: 85vh;
+  overflow-y: auto;
+  padding: 28px;
+  background: #202020;
+  border: 1px solid #333;
+  border-radius: 12px;
+}
+
+.rules-modal h2 {
+  margin: 4px 0 18px;
+}
+
+.rules-modal>p {
+  line-height: 1.5;
+  color: #bbb;
+}
+
+.rules-section {
+  margin-top: 18px;
+}
+
+.rules-section strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.rules-section p {
+  margin: 0;
+  color: #aaa;
+  line-height: 1.45;
+}
+
+.rules-close {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  border: 0;
+  background: transparent;
+  color: #aaa;
+  font-size: 24px;
+  cursor: pointer;
+}
+
+.rules-close:hover {
+  color: #fff;
+}
+
 header span {
   color: #aaa;
 }
@@ -48,9 +134,25 @@ header span {
   color: white;
 }
 
+.game-title {
+  cursor: pointer;
+  user-select: none;
+}
+
+.game-title:hover {
+  opacity: 0.8;
+}
+
 .lives {
   color: #35b8a6 !important;
   font-size: 17px;
+  white-space: nowrap;
+}
+
+.timer2 {
+  color: #35b8a6 !important;
+  font-size: 14px;
+  white-space: nowrap;
 }
 
 /* Game */
@@ -196,7 +298,7 @@ label {
   font-size: 18px;
 }
 
-.section-heading > strong {
+.section-heading>strong {
   color: #aaa;
   font-size: 13px;
 }
@@ -282,7 +384,7 @@ label {
   border-top: 1px solid #3a3a3a;
 }
 
-.missed > small {
+.missed>small {
   display: block;
   margin-bottom: 5px;
 }
@@ -332,7 +434,7 @@ label {
   margin-bottom: 20px;
 }
 
-.setting > small {
+.setting>small {
   display: block;
   margin-bottom: 7px;
 }
@@ -341,7 +443,7 @@ label {
 
 .option-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 8px;
 }
 
@@ -394,7 +496,7 @@ label {
   text-align: center;
 }
 
-/* Timed / Zen */
+/* Timed / Rush / Short Rush / Zen */
 
 .mode-options {
   grid-template-columns: repeat(2, 1fr);
@@ -437,6 +539,7 @@ label {
   border-color: #35b8a6;
   color: #35b8a6;
 }
+
 /* Start screen */
 
 .start-screen {
@@ -470,7 +573,7 @@ label {
   border-bottom: 1px solid #303030;
 }
 
-.instruction > strong {
+.instruction>strong {
   display: flex;
   justify-content: center;
   align-items: center;
@@ -507,9 +610,24 @@ label {
 .results-screen small {
   text-transform: lowercase;
 }
+
 /* Mobile */
 
 @media (max-width: 600px) {
+  main {
+    margin: 15px auto;
+  }
+
+  header {
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .stats {
+    gap: 10px;
+    text-align: right;
+  }
+
   .final-stats {
     grid-template-columns: 1fr;
   }
@@ -531,4 +649,140 @@ label {
     flex-direction: column;
     gap: 3px;
   }
+
+  .prompt strong {
+    font-size: 44px;
+  }
+
+}
+
+/* Append to your existing stylesheet. Neutral colors so it fits light or dark themes. */
+/* Leaderboard Section */
+
+.leaderboard {
+  width: 100%;
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid #3a3a3a;
+}
+
+.leaderboard h2 {
+  margin: 4px 0 12px;
+  font-size: 18px;
+}
+
+.lb-empty {
+  color: #777;
+  font-size: 13px;
+  text-align: center;
+  margin: 12px 0;
+}
+
+.lb-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.lb-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: #151515;
+  border: 1px solid #333;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.lb-row.lb-you {
+  border-color: #35b8a6;
+  background: #173b37;
+}
+
+.lb-rank {
+  width: 20px;
+  color: #888;
+  font-weight: bold;
+  font-size: 12px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.lb-dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.15);
+}
+
+.lb-name {
+  flex: 1;
+  min-width: 0;
+  color: #eee;
+  font-size: 13px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lb-score {
+  white-space: nowrap;
+  font-weight: bold;
+  color: #35b8a6;
+}
+
+/* Leaderboard Submission Modal Form */
+
+.lb-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 15px;
+  background: #151515;
+  border: 1px solid #333;
+  border-radius: 8px;
+}
+
+.lb-form input {
+  width: 100%;
+  height: 40px;
+  padding: 0 10px;
+  background: #111;
+  border: 1px solid #444;
+  color: #fff;
+  font-size: 14px;
+  outline: none;
+  border-radius: 4px;
+}
+
+.lb-form input:focus {
+  border-color: #35b8a6;
+}
+
+.lb-form input[type="color"] {
+  height: 40px;
+  padding: 4px;
+  cursor: pointer;
+}
+
+.lb-skip {
+  background: none;
+  border: none;
+  color: #888;
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+  margin-top: 4px;
+  align-self: center;
+}
+
+.lb-skip:hover {
+  color: #eee;
 }
