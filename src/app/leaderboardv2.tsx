@@ -5,7 +5,6 @@ const SUPABASE_KEY = "sb_publishable_mB2ZU7RWDpQdPA-mIh8tKw_oxs1_2_B";
 
 export const MAX_NAME_LENGTH = 15;
 
-/* Zen is intentionally not ranked. */
 export type RankedMode = "timed" | "rush" | "alphabet";
 
 export const isRankedMode = (mode: string): mode is RankedMode =>
@@ -50,19 +49,24 @@ async function rpc<T>(fn: string, args: Record<string, unknown>): Promise<T> {
   return data as T;
 }
 
-/* timed: higher is better. rush/a–z: lower time is better. */
 export const wouldQualify = (
   mode: RankedMode,
   difficulty: string,
+  roundTime: number | null,
   score: number,
 ) =>
   rpc<boolean>("would_qualify", {
     p_mode: mode,
     p_difficulty: difficulty,
+    p_round_time: mode === "timed" ? roundTime : null,
     p_score: score,
   });
 
-export async function fetchLeaderboard(mode: RankedMode, difficulty: string) {
+export async function fetchLeaderboard(
+  mode: RankedMode,
+  difficulty: string,
+  roundTime: number | null,
+) {
   const rows = await rpc<
     {
       name: string;
@@ -73,6 +77,7 @@ export async function fetchLeaderboard(mode: RankedMode, difficulty: string) {
   >("get_leaderboard", {
     p_mode: mode,
     p_difficulty: difficulty,
+    p_round_time: mode === "timed" ? roundTime : null,
   });
 
   return rows.map(
@@ -89,6 +94,7 @@ export const submitScore = (
   runId: string,
   mode: RankedMode,
   difficulty: string,
+  roundTime: number | null,
   score: number,
   name: string,
   color: string,
@@ -97,6 +103,7 @@ export const submitScore = (
     p_run_id: runId,
     p_mode: mode,
     p_difficulty: difficulty,
+    p_round_time: mode === "timed" ? roundTime : null,
     p_score: score,
     p_name: name,
     p_color: color,
@@ -109,6 +116,7 @@ export function formatScore(mode: RankedMode, score: number) {
 type LeaderboardProps = {
   mode: string;
   difficulty: string;
+  roundTime?: number | null;
   refreshKey?: number;
   highlightRank?: number | null;
 };
@@ -116,6 +124,7 @@ type LeaderboardProps = {
 export function Leaderboard({
   mode,
   difficulty,
+  roundTime = null,
   refreshKey = 0,
   highlightRank = null,
 }: LeaderboardProps) {
@@ -130,18 +139,20 @@ export function Leaderboard({
     setEntries(null);
     setFailed(false);
 
-    fetchLeaderboard(mode, difficulty)
+    fetchLeaderboard(mode, difficulty, mode === "timed" ? roundTime : null)
       .then((rows) => {
         if (!cancelled) setEntries(rows);
       })
-      .catch(() => {
+      .catch((error) => {
+        console.error("LEADERBOARD ERROR:", error);
+
         if (!cancelled) setFailed(true);
       });
 
     return () => {
       cancelled = true;
     };
-  }, [mode, difficulty, refreshKey]);
+  }, [mode, difficulty, roundTime, refreshKey]);
 
   if (!isRankedMode(mode)) {
     return (
@@ -157,7 +168,10 @@ export function Leaderboard({
       <small>leaderboard</small>
 
       <h2>
-        {MODE_LABELS[mode]} · {DIFFICULTY_LABELS[difficulty] ?? difficulty}
+        {MODE_LABELS[mode]}
+        {mode === "timed" && roundTime !== null ? ` · ${roundTime}s` : ""}
+        {" · "}
+        {DIFFICULTY_LABELS[difficulty] ?? difficulty}
       </h2>
 
       {failed && <p className="lb-empty">couldn't load the leaderboard.</p>}
@@ -197,6 +211,7 @@ export function Leaderboard({
 type ModalProps = {
   mode: RankedMode;
   difficulty: string;
+  roundTime?: number | null;
   score: number;
   onSubmit: (name: string, color: string) => Promise<void>;
   onClose: () => void;
@@ -205,6 +220,7 @@ type ModalProps = {
 export function LeaderboardSubmitModal({
   mode,
   difficulty,
+  roundTime = null,
   score,
   onSubmit,
   onClose,
@@ -244,7 +260,10 @@ export function LeaderboardSubmitModal({
         aria-labelledby="lb-modal-title"
       >
         <small>
-          {MODE_LABELS[mode]} · {DIFFICULTY_LABELS[difficulty] ?? difficulty}
+          {MODE_LABELS[mode]}
+          {mode === "timed" && roundTime !== null ? ` · ${roundTime}s` : ""}
+          {" · "}
+          {DIFFICULTY_LABELS[difficulty] ?? difficulty}
         </small>
 
         <h2 id="lb-modal-title">you made the leaderboard!</h2>

@@ -549566,12 +549566,6 @@ type PromptData = {
   examples: string[];
 };
 
-/*
- * Build information about every 2- and 3-letter
- * combination in the dictionary.
- *
- * Each word only counts once for a combination.
- */
 function buildPromptData() {
   const data = new Map<string, PromptData>();
 
@@ -549594,10 +549588,6 @@ function buildPromptData() {
       if (existing) {
         existing.count++;
 
-        /*
-         * Keep examples with different starting letters.
-         * This makes the eventual examples less repetitive.
-         */
         const firstLetter = word[0];
 
         if (
@@ -549620,14 +549610,6 @@ function buildPromptData() {
 
 const PROMPT_DATA = buildPromptData();
 
-/*
- * Build a pool for each difficulty.
- *
- * Super easy = 2000+ words containing the fragment
- * Easy       = 1000+ words
- * Medium     = 500+ words
- * Hard       = 200+ words
- */
 function buildPromptPool(difficulty: Difficulty) {
   const minimum = DIFFICULTY_LIMITS[difficulty];
 
@@ -549639,12 +549621,6 @@ function buildPromptPool(difficulty: Difficulty) {
       examples: data.examples,
     }));
 }
-
-/*
- * Pick a prompt.
- *
- * More common combinations are weighted more heavily.
- */
 
 function pickPrompt(difficulty: Difficulty) {
   const pool = buildPromptPool(difficulty);
@@ -549669,19 +549645,6 @@ function pickPrompt(difficulty: Difficulty) {
   return weightedPool[Math.floor(Math.random() * weightedPool.length)];
 }
 
-/*
- * Pick two random example words.
- *
- * The prompt data already tries to keep examples with
- * different starting letters, so the examples won't
- * constantly look like:
- *
- * apple / another
- *
- * Instead you'll get things more like:
- *
- * planet / complete
- */
 function getRandomExamples(examples: string[]) {
   if (examples.length <= 2) {
     return [...examples];
@@ -549693,22 +549656,21 @@ function getRandomExamples(examples: string[]) {
 }
 
 export default function App() {
-  /*
-   * Super easy is the default difficulty.
-   */
   const [difficulty, setDifficulty] = useState<Difficulty>("superEasy");
+
   const runIdRef = useRef<string | null>(null);
+
   const [pendingRun, setPendingRun] = useState<{
     runId: string;
     mode: RankedMode;
     difficulty: Difficulty;
+    roundTime: number | null;
     score: number;
   } | null>(null);
+
   const [boardRefresh, setBoardRefresh] = useState(0);
   const [highlightRank, setHighlightRank] = useState<number | null>(null);
-  /*
-   * Default timer is 20 seconds.
-   */
+
   const [roundTime, setRoundTime] = useState<number>(10);
 
   type GameMode = "timed" | "zen" | "rush" | "alphabet";
@@ -549720,24 +549682,24 @@ export default function App() {
   const [prompt, setPrompt] = useState(initialPrompt.fragment);
 
   const [promptExamples, setPromptExamples] = useState(initialPrompt.examples);
+
   const [started, setStarted] = useState(false);
   const [input, setInput] = useState("");
 
-  /*
-   * Easy gets 4 starting lives.
-   * Medium and Hard get 3.
-   */
   const [lives, setLives] = useState(3);
 
   const [score, setScore] = useState(0);
   const [showLeaderboard, setShowLeaderboard] = useState(false);
+
   const [rushWords, setRushWords] = useState(0);
   const [rushStartTime, setRushStartTime] = useState<number | null>(null);
+
   const [rushElapsed, setRushElapsed] = useState(0);
   const [rushTotalTime, setRushTotalTime] = useState<number | null>(null);
 
   const [gamesPlayed, setGamesPlayed] = useState(0);
   const [showRules, setShowRules] = useState(false);
+
   const countedInitialGame = useRef(false);
 
   const [time, setTime] = useState(DEFAULT_TIME);
@@ -549752,17 +549714,10 @@ export default function App() {
 
   const [gameOver, setGameOver] = useState(false);
 
-  /*
-   * Tracks when the current prompt appeared.
-   * This is used to calculate average answer time.
-   */
   const roundStartedAt = useRef(Date.now());
 
   const [answerTimes, setAnswerTimes] = useState<number[]>([]);
 
-  /*
-   * Every prompt that the player timed out on.
-   */
   const [missedPrompts, setMissedPrompts] = useState<
     {
       fragment: string;
@@ -549770,11 +549725,6 @@ export default function App() {
     }[]
   >([]);
 
-  /*
-   * Timer.
-   *
-   * Zen and Rush modes completely disable the timer.
-   */
   useEffect(() => {
     loadGamesPlayed(setGamesPlayed);
   }, []);
@@ -549789,71 +549739,82 @@ export default function App() {
     return () => window.clearInterval(id);
   }, [gameOver, gameMode]);
 
-  /*
-   * Rush modes use a live elapsed timer instead of lives.
-   */
   useEffect(() => {
     if (
       gameOver ||
       (gameMode !== "rush" && gameMode !== "alphabet") ||
       rushStartTime === null
-    )
+    ) {
       return;
+    }
 
     const update = () => {
       setRushElapsed((Date.now() - rushStartTime) / 1000);
     };
 
     update();
+
     const id = window.setInterval(update, 100);
 
     return () => window.clearInterval(id);
   }, [gameOver, gameMode, rushStartTime]);
+
   useEffect(() => {
-    if (!gameOver || !started || !isRankedMode(gameMode)) return;
+    if (!gameOver || !started || !isRankedMode(gameMode)) {
+      return;
+    }
 
     const runId = runIdRef.current;
+
     if (!runId) return;
 
     const isRush = gameMode === "rush" || gameMode === "alphabet";
-    if (isRush && rushTotalTime === null) return;
 
-    runIdRef.current = null; // only check each run once
+    if (isRush && rushTotalTime === null) {
+      return;
+    }
 
-    // rush modes: milliseconds (lower wins). timed: words (higher wins).
+    runIdRef.current = null;
+
     const finalScore = isRush ? Math.round((rushTotalTime ?? 0) * 1000) : score;
 
-    wouldQualify(gameMode, difficulty, finalScore)
+    wouldQualify(
+      gameMode,
+      difficulty,
+      gameMode === "timed" ? roundTime : null,
+      finalScore,
+    )
       .then((qualifies) => {
-        if (qualifies) {
-          setPendingRun({
-            runId,
-            mode: gameMode,
-            difficulty,
-            score: finalScore,
-          });
-        }
-      })
-      .catch(() => {
-        /* leaderboard unavailable: the game still works */
-      });
-  }, [gameOver, started, gameMode, difficulty, score, rushTotalTime]);
-  /*
-   * Handle the timer reaching zero.
-   */
-  useEffect(() => {
-    if (gameOver || gameMode !== "timed" || time !== 0) return;
+        if (!qualifies) return;
 
-    /*
-     * Choose two example words only AFTER
-     * the player misses the prompt.
-     */
+        setPendingRun({
+          runId,
+          mode: gameMode,
+          difficulty,
+          roundTime: gameMode === "timed" ? roundTime : null,
+          score: finalScore,
+        });
+      })
+      .catch((error) => {
+        console.error("LEADERBOARD QUALIFY ERROR:", error);
+      });
+  }, [
+    gameOver,
+    started,
+    gameMode,
+    difficulty,
+    roundTime,
+    score,
+    rushTotalTime,
+  ]);
+
+  useEffect(() => {
+    if (gameOver || gameMode !== "timed" || time !== 0) {
+      return;
+    }
+
     const examples = getRandomExamples(promptExamples);
 
-    /*
-     * Save this missed prompt for the final
-     * statistics screen.
-     */
     setMissedPrompts((current) => [
       ...current,
       {
@@ -549862,9 +549823,6 @@ export default function App() {
       },
     ]);
 
-    /*
-     * Tell the player what they could have used.
-     */
     if (examples.length >= 2) {
       setMessage(`you could have put ${examples[0]} or ${examples[1]}.`);
     } else if (examples.length === 1) {
@@ -549875,9 +549833,6 @@ export default function App() {
 
     setInput("");
 
-    /*
-     * Lose a life.
-     */
     setLives((current) => {
       const next = current - 1;
 
@@ -549888,9 +549843,6 @@ export default function App() {
       return next;
     });
 
-    /*
-     * Move to the next prompt.
-     */
     const nextPrompt = pickPrompt(difficulty);
 
     setPrompt(nextPrompt.fragment);
@@ -549913,56 +549865,34 @@ export default function App() {
       setMessage(`your word must be at least ${minLength} letters.`);
       return;
     }
-    /*
-     * Only alphabetic words are accepted.
-     */
+
     if (!/^[a-z]+$/.test(word)) {
       setMessage("use letters only.");
       return;
     }
 
-    /*
-     * Word must exist in the dictionary.
-     */
     if (!DICTIONARY.has(word)) {
       setMessage("that word isn't in the dictionary.");
       return;
     }
 
-    /*
-     * Word must contain the current fragment.
-     */
     if (!word.includes(prompt)) {
       setMessage(`your word needs "${prompt.toUpperCase()}".`);
       return;
     }
 
-    /*
-     * No repeating words.
-     */
     if (used.has(word)) {
       setMessage("you already used that word.");
       return;
     }
 
-    /*
-     * Calculate how long the player took
-     * to answer this prompt.
-     */
     const answerTime = (Date.now() - roundStartedAt.current) / 1000;
 
     setAnswerTimes((current) => [...current, answerTime]);
 
-    /*
-     * Add the word to used words.
-     */
     const nextUsed = new Set(used);
     nextUsed.add(word);
 
-    /*
-     * Add every letter in the word to the
-     * A-Z collection.
-     */
     const nextLetters = new Set(letters);
 
     for (const char of word.toUpperCase()) {
@@ -549980,6 +549910,7 @@ export default function App() {
 
     if (gameMode === "rush") {
       const nextRushWords = rushWords + 1;
+
       setRushWords(nextRushWords);
 
       if (nextRushWords >= 10) {
@@ -550004,9 +549935,6 @@ export default function App() {
       }
     }
 
-    /*
-     * Get the next prompt.
-     */
     const nextPrompt = pickPrompt(difficulty);
 
     setPrompt(nextPrompt.fragment);
@@ -550018,9 +549946,6 @@ export default function App() {
 
     roundStartedAt.current = Date.now();
 
-    /*
-     * Completing A-Z gives an extra life.
-     */
     if (nextLetters.size === 26) {
       setLetters(new Set());
 
@@ -550029,14 +549954,10 @@ export default function App() {
       setMessage("a–z complete! you gained a life.");
     } else {
       setLetters(nextLetters);
-
       setMessage("good word!");
     }
   };
 
-  /*
-   * Zen mode can be ended manually.
-   */
   const goToStart = () => {
     setStarted(false);
     setGameOver(false);
@@ -550050,18 +549971,24 @@ export default function App() {
     setRushTotalTime(null);
     setRushStartTime(null);
   };
+
   const finishGame = () => {
     if (gameMode !== "zen" || gameOver) return;
 
     setGameOver(true);
   };
+
   const startGame = () => {
     countGamePlayed(setGamesPlayed);
-    runIdRef.current = crypto.randomUUID(); // makes it impossible to submit one run twice
+
+    runIdRef.current = crypto.randomUUID();
+
     setPendingRun(null);
     setHighlightRank(null);
+
     const startingLives =
       difficulty === "superEasy" ? 5 : difficulty === "easy" ? 4 : 3;
+
     const nextPrompt = pickPrompt(difficulty);
     const now = Date.now();
 
@@ -550087,6 +550014,7 @@ export default function App() {
     setMessage("enter a word containing the letters.");
     setGameOver(false);
     setStarted(true);
+
     roundStartedAt.current = now;
 
     if (gameMode === "rush" || gameMode === "alphabet") {
@@ -550095,6 +550023,7 @@ export default function App() {
       setRushStartTime(null);
     }
   };
+
   const handleLeaderboardSubmit = async (name: string, color: string) => {
     if (!pendingRun) return;
 
@@ -550102,10 +550031,11 @@ export default function App() {
       pendingRun.runId,
       pendingRun.mode,
       pendingRun.difficulty,
+      pendingRun.roundTime,
       pendingRun.score,
       name,
       color,
-    ); // if this throws, the modal shows the error
+    );
 
     setGameMode(pendingRun.mode);
     setDifficulty(pendingRun.difficulty);
@@ -550113,19 +550043,13 @@ export default function App() {
     setBoardRefresh((n) => n + 1);
     setPendingRun(null);
   };
-  /*
-   * Start another game using the settings selected
-   * on the previous stats screen.
-   */
+
   const reset = () => {
     startGame();
   };
 
   const hearts = useMemo(() => "♥".repeat(Math.max(0, lives)), [lives]);
 
-  /*
-   * Average answer time.
-   */
   const averageTime =
     answerTimes.length > 0
       ? answerTimes.reduce((sum, value) => sum + value, 0) / answerTimes.length
@@ -550136,6 +550060,7 @@ export default function App() {
       <header>
         <div className="game-title" onClick={goToStart}>
           <b>WORD TIMER</b>
+          <span> BETA</span>
         </div>
 
         <div className="stats">
@@ -550161,6 +550086,7 @@ export default function App() {
           )}
         </div>
       </header>
+
       {showRules && (
         <div className="rules-overlay" onClick={() => setShowRules(false)}>
           <div
@@ -550176,6 +550102,7 @@ export default function App() {
             </button>
 
             <small>how to play</small>
+
             <h2>rules & instructions</h2>
 
             <p>
@@ -550186,6 +550113,7 @@ export default function App() {
 
             <div className="rules-section">
               <strong>timed</strong>
+
               <p>
                 you have the selected amount of time to find a word. running out
                 of time costs a life. collect all 26 letters to gain an extra
@@ -550195,6 +550123,7 @@ export default function App() {
 
             <div className="rules-section">
               <strong>rush</strong>
+
               <p>
                 complete 10 words as quickly as possible. there is no timer per
                 word. your final time is your score.
@@ -550203,16 +550132,19 @@ export default function App() {
 
             <div className="rules-section">
               <strong>alphabet</strong>
+
               <p>keep filling in words until you get all 26 letters</p>
             </div>
 
             <div className="rules-section">
               <strong>zen</strong>
+
               <p>play without a timer or lives. finish whenever you want.</p>
             </div>
           </div>
         </div>
       )}
+
       {showLeaderboard && (
         <div
           className="rules-overlay"
@@ -550231,19 +550163,21 @@ export default function App() {
             </button>
 
             <small>leaderboards</small>
+
             <h2>view leaderboard</h2>
 
             <Leaderboard
               mode={gameMode}
               difficulty={difficulty}
+              roundTime={gameMode === "timed" ? roundTime : null}
               refreshKey={boardRefresh}
             />
           </div>
         </div>
       )}
+
       <section className="card">
         {!started ? (
-          /* ==================== START SCREEN ==================== */
           <div className="start-screen">
             <div className="results-header">
               <small>how to play</small>
@@ -550258,6 +550192,7 @@ export default function App() {
             <div className="new-game-settings">
               <div className="settings-title">
                 <small>new game</small>
+
                 <h2>
                   choose your settings
                   <button
@@ -550282,7 +550217,6 @@ export default function App() {
                     onClick={() => setDifficulty("superEasy")}
                   >
                     <strong>super easy</strong>
-
                     <span>5,000+ words</span>
                   </button>
 
@@ -550294,7 +550228,6 @@ export default function App() {
                     onClick={() => setDifficulty("easy")}
                   >
                     <strong>easy</strong>
-
                     <span>1,000+ words</span>
                   </button>
 
@@ -550306,7 +550239,6 @@ export default function App() {
                     onClick={() => setDifficulty("medium")}
                   >
                     <strong>medium</strong>
-
                     <span>500+ words</span>
                   </button>
 
@@ -550318,7 +550250,6 @@ export default function App() {
                     onClick={() => setDifficulty("hard")}
                   >
                     <strong>hard</strong>
-
                     <span>200+ words</span>
                   </button>
                 </div>
@@ -550358,7 +550289,6 @@ export default function App() {
                     onClick={() => setGameMode("alphabet")}
                   >
                     <strong>alphabet</strong>
-
                     <span>collect 26 letters</span>
                   </button>
 
@@ -550374,6 +550304,7 @@ export default function App() {
                   </button>
                 </div>
               </div>
+
               {gameMode === "timed" && (
                 <div className="setting">
                   <small>time per word</small>
@@ -550399,6 +550330,7 @@ export default function App() {
                   </div>
                 </div>
               )}
+
               <button
                 type="button"
                 className="play-again start-button"
@@ -550406,6 +550338,7 @@ export default function App() {
               >
                 start game
               </button>
+
               <button
                 type="button"
                 className="lb-skip"
@@ -550416,7 +550349,6 @@ export default function App() {
             </div>
           </div>
         ) : gameOver ? (
-          /* ==================== GAME OVER ==================== */
           <div className="results-screen">
             <div className="results-header">
               <small>
@@ -550484,13 +550416,17 @@ export default function App() {
             {missedPrompts.length === 0 && (
               <p className="no-missed">no missed prompts!</p>
             )}
+
             <div className="divider" />
+
             <Leaderboard
               mode={gameMode}
               difficulty={difficulty}
+              roundTime={gameMode === "timed" ? roundTime : null}
               refreshKey={boardRefresh}
               highlightRank={highlightRank}
             />
+
             <div className="divider" />
 
             <div className="new-game-settings">
@@ -550512,7 +550448,6 @@ export default function App() {
                     onClick={() => setDifficulty("superEasy")}
                   >
                     <strong>super easy</strong>
-
                     <span>5,000+ words</span>
                   </button>
 
@@ -550524,7 +550459,6 @@ export default function App() {
                     onClick={() => setDifficulty("easy")}
                   >
                     <strong>easy</strong>
-
                     <span>1,000+ words</span>
                   </button>
 
@@ -550536,7 +550470,6 @@ export default function App() {
                     onClick={() => setDifficulty("medium")}
                   >
                     <strong>medium</strong>
-
                     <span>500+ words</span>
                   </button>
 
@@ -550548,7 +550481,6 @@ export default function App() {
                     onClick={() => setDifficulty("hard")}
                   >
                     <strong>hard</strong>
-
                     <span>200+ words</span>
                   </button>
                 </div>
@@ -550612,7 +550544,6 @@ export default function App() {
                     onClick={() => setGameMode("alphabet")}
                   >
                     <strong>alphabet</strong>
-
                     <span>collect 26 letters</span>
                   </button>
 
@@ -550641,7 +550572,6 @@ export default function App() {
             </div>
           </div>
         ) : (
-          /* ==================== GAME ==================== */
           <>
             <div className="top">
               <div>
@@ -550712,8 +550642,6 @@ export default function App() {
           </>
         )}
 
-        {/* ==================== A-Z TRACKER ==================== */}
-
         {started && (gameMode === "timed" || gameMode === "alphabet") && (
           <>
             <div className="divider" />
@@ -550746,10 +550674,12 @@ export default function App() {
           </>
         )}
       </section>
+
       {pendingRun && (
         <LeaderboardSubmitModal
           mode={pendingRun.mode}
           difficulty={pendingRun.difficulty}
+          roundTime={pendingRun.roundTime}
           score={pendingRun.score}
           onSubmit={handleLeaderboardSubmit}
           onClose={() => setPendingRun(null)}
