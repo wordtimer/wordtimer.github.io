@@ -549900,8 +549900,10 @@ export default function App() {
     if (gameOver) return;
 
     const word = input.trim().toLowerCase();
-    if (word.length < 4) {
-      setMessage("your word must be at least 4 letters.");
+    const minLength = prompt.length + 1;
+
+    if (word.length < minLength) {
+      setMessage(`your word must be at least ${minLength} letters.`);
       return;
     }
     /*
@@ -550160,8 +550162,8 @@ export default function App() {
             <h2>rules & instructions</h2>
 
             <p>
-              find a word containing the letters shown on screen. your word must
-              be at least 4 letters long.
+              find a word containing the letters/substring shown on screen. your word must
+              be at least 1 letter longer than the fragment. words must be in the dictionary and cannot be repeated.
             </p>
 
             <div className="rules-section">
@@ -550169,7 +550171,7 @@ export default function App() {
               <p>
                 you have the selected amount of time to find a word. running out
                 of time costs a life. collect all 26 letters to gain an extra
-                life.
+                life. wrong words do not cost a life.
               </p>
             </div>
 
@@ -550191,13 +550193,7 @@ export default function App() {
               <p>play without a timer or lives. finish whenever you want.</p>
             </div>
 
-            <div className="rules-section">
-              <strong>all modes</strong>
-              <p>
-                words must be in the dictionary and cannot be repeated. wrong
-                words do not cost a life.
-              </p>
-            </div>
+
           </div>
         </div>
       )}
