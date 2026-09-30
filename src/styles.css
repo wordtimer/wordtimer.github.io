@@ -84,7 +84,7 @@ header b {
   margin: 4px 0 18px;
 }
 
-.rules-modal>p {
+.rules-modal > p {
   line-height: 1.5;
   color: #bbb;
 }
@@ -298,7 +298,7 @@ label {
   font-size: 18px;
 }
 
-.section-heading>strong {
+.section-heading > strong {
   color: #aaa;
   font-size: 13px;
 }
@@ -384,7 +384,7 @@ label {
   border-top: 1px solid #3a3a3a;
 }
 
-.missed>small {
+.missed > small {
   display: block;
   margin-bottom: 5px;
 }
@@ -434,7 +434,7 @@ label {
   margin-bottom: 20px;
 }
 
-.setting>small {
+.setting > small {
   display: block;
   margin-bottom: 7px;
 }
@@ -573,7 +573,7 @@ label {
   border-bottom: 1px solid #303030;
 }
 
-.instruction>strong {
+.instruction > strong {
   display: flex;
   justify-content: center;
   align-items: center;
@@ -653,7 +653,6 @@ label {
   .prompt strong {
     font-size: 44px;
   }
-
 }
 
 /* Append to your existing stylesheet. Neutral colors so it fits light or dark themes. */
@@ -773,14 +772,15 @@ label {
 }
 
 .lb-skip {
+  display: block;
+  margin: 10px auto 0;
+  padding: 0;
   background: none;
   border: none;
   color: #888;
   font-size: 12px;
   cursor: pointer;
   text-decoration: underline;
-  margin-top: 4px;
-  align-self: center;
 }
 
 .lb-skip:hover {

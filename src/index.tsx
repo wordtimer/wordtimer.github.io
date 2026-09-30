@@ -549511,8 +549511,10 @@ zwinglianist
 zwitter
 zwitterion
 zwitterionic
-`.split(/\s+/)
-    .map(word => word.toLowerCase()));
+`
+    .split(/\s+/)
+    .map((word) => word.toLowerCase()),
+);
 
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
@@ -549534,7 +549536,7 @@ async function loadGamesPlayed(
 
     const data = await response.json();
     setGamesPlayed(Number(data.value) || 0);
-  } catch { }
+  } catch {}
 }
 
 async function countGamePlayed(
@@ -549547,7 +549549,7 @@ async function countGamePlayed(
 
     const data = await response.json();
     setGamesPlayed(Number(data.value) || 0);
-  } catch { }
+  } catch {}
 }
 
 type Difficulty = "superEasy" | "easy" | "medium" | "hard";
@@ -549709,7 +549711,7 @@ export default function App() {
    */
   const [roundTime, setRoundTime] = useState<number>(10);
 
-  type GameMode = "timed" | "zen" | "rush" | "shortrush";
+  type GameMode = "timed" | "zen" | "rush" | "alphabet";
 
   const [gameMode, setGameMode] = useState<GameMode>("rush");
 
@@ -549728,7 +549730,7 @@ export default function App() {
   const [lives, setLives] = useState(3);
 
   const [score, setScore] = useState(0);
-
+  const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [rushWords, setRushWords] = useState(0);
   const [rushStartTime, setRushStartTime] = useState<number | null>(null);
   const [rushElapsed, setRushElapsed] = useState(0);
@@ -549793,7 +549795,7 @@ export default function App() {
   useEffect(() => {
     if (
       gameOver ||
-      (gameMode !== "rush" && gameMode !== "shortrush") ||
+      (gameMode !== "rush" && gameMode !== "alphabet") ||
       rushStartTime === null
     )
       return;
@@ -549813,7 +549815,7 @@ export default function App() {
     const runId = runIdRef.current;
     if (!runId) return;
 
-    const isRush = gameMode === "rush" || gameMode === "shortrush";
+    const isRush = gameMode === "rush" || gameMode === "alphabet";
     if (isRush && rushTotalTime === null) return;
 
     runIdRef.current = null; // only check each run once
@@ -549824,7 +549826,12 @@ export default function App() {
     wouldQualify(gameMode, difficulty, finalScore)
       .then((qualifies) => {
         if (qualifies) {
-          setPendingRun({ runId, mode: gameMode, difficulty, score: finalScore });
+          setPendingRun({
+            runId,
+            mode: gameMode,
+            difficulty,
+            score: finalScore,
+          });
         }
       })
       .catch(() => {
@@ -549971,16 +549978,27 @@ export default function App() {
 
     setInput("");
 
-    if (gameMode === "rush" || gameMode === "shortrush") {
+    if (gameMode === "rush") {
       const nextRushWords = rushWords + 1;
-      const rushGoal = gameMode === "shortrush" ? 5 : 10;
       setRushWords(nextRushWords);
 
-      if (nextRushWords >= rushGoal) {
+      if (nextRushWords >= 10) {
         const totalTime = (Date.now() - (rushStartTime ?? Date.now())) / 1000;
 
         setRushTotalTime(totalTime);
         setMessage("rush complete!");
+        setGameOver(true);
+        return;
+      }
+    }
+
+    if (gameMode === "alphabet") {
+      if (nextLetters.size === 26) {
+        const totalTime = (Date.now() - (rushStartTime ?? Date.now())) / 1000;
+
+        setRushTotalTime(totalTime);
+        setLetters(nextLetters);
+        setMessage("a–z complete!");
         setGameOver(true);
         return;
       }
@@ -550071,7 +550089,7 @@ export default function App() {
     setStarted(true);
     roundStartedAt.current = now;
 
-    if (gameMode === "rush" || gameMode === "shortrush") {
+    if (gameMode === "rush" || gameMode === "alphabet") {
       setRushStartTime(now);
     } else {
       setRushStartTime(null);
@@ -550137,7 +550155,7 @@ export default function App() {
                 <span className="lives">{hearts || "—"}</span>
               )}
 
-              {(gameMode === "rush" || gameMode === "shortrush") && (
+              {(gameMode === "rush" || gameMode === "alphabet") && (
                 <span className="timer2">{rushElapsed.toFixed(1)}s</span>
               )}
             </>
@@ -550162,8 +550180,9 @@ export default function App() {
             <h2>rules & instructions</h2>
 
             <p>
-              find a word containing the letters/substring shown on screen. your word must
-              be at least 1 letter longer than the fragment. words must be in the dictionary and cannot be repeated.
+              find a word containing the letters/substring shown on screen. your
+              word must be at least 1 letter longer than the fragment. words
+              must be in the dictionary and cannot be repeated.
             </p>
 
             <div className="rules-section">
@@ -550184,16 +550203,42 @@ export default function App() {
             </div>
 
             <div className="rules-section">
-              <strong>shortrush</strong>
-              <p>same as rush, but with 5 words instead of 10.</p>
+              <strong>alphabet</strong>
+              <p>keep filling in words until you get all 26 letters</p>
             </div>
 
             <div className="rules-section">
               <strong>zen</strong>
               <p>play without a timer or lives. finish whenever you want.</p>
             </div>
+          </div>
+        </div>
+      )}
+      {showLeaderboard && (
+        <div
+          className="rules-overlay"
+          onClick={() => setShowLeaderboard(false)}
+        >
+          <div
+            className="rules-modal"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="rules-close"
+              onClick={() => setShowLeaderboard(false)}
+            >
+              ×
+            </button>
 
+            <small>leaderboards</small>
+            <h2>view leaderboard</h2>
 
+            <Leaderboard
+              mode={gameMode}
+              difficulty={difficulty}
+              refreshKey={boardRefresh}
+            />
           </div>
         </div>
       )}
@@ -550309,13 +550354,13 @@ export default function App() {
                   <button
                     type="button"
                     className={
-                      gameMode === "shortrush" ? "option selected" : "option"
+                      gameMode === "alphabet" ? "option selected" : "option"
                     }
-                    onClick={() => setGameMode("shortrush")}
+                    onClick={() => setGameMode("alphabet")}
                   >
-                    <strong>shortrush</strong>
+                    <strong>alphabet</strong>
 
-                    <span>5 words, fastest time</span>
+                    <span>collect 26 letters</span>
                   </button>
 
                   <button
@@ -550362,6 +550407,13 @@ export default function App() {
               >
                 start game
               </button>
+              <button
+                type="button"
+                className="lb-skip"
+                onClick={() => setShowLeaderboard(true)}
+              >
+                view leaderboard
+              </button>
             </div>
           </div>
         ) : gameOver ? (
@@ -550370,20 +550422,20 @@ export default function App() {
             <div className="results-header">
               <small>
                 {gameMode === "zen" ||
-                  gameMode === "rush" ||
-                  gameMode === "shortrush"
+                gameMode === "rush" ||
+                gameMode === "alphabet"
                   ? "run complete"
                   : "game over"}
               </small>
 
               <h2>
-                {gameMode === "rush" || gameMode === "shortrush"
+                {gameMode === "rush" || gameMode === "alphabet"
                   ? rushTotalTime?.toFixed(2)
                   : score}
               </h2>
 
               <p>
-                {gameMode === "rush" || gameMode === "shortrush"
+                {gameMode === "rush" || gameMode === "alphabet"
                   ? "seconds"
                   : "words this run"}
               </p>
@@ -550556,13 +550608,13 @@ export default function App() {
                   <button
                     type="button"
                     className={
-                      gameMode === "shortrush" ? "option selected" : "option"
+                      gameMode === "alphabet" ? "option selected" : "option"
                     }
-                    onClick={() => setGameMode("shortrush")}
+                    onClick={() => setGameMode("alphabet")}
                   >
-                    <strong>shortrush</strong>
+                    <strong>alphabet</strong>
 
-                    <span>5 words, fastest time</span>
+                    <span>collect 26 letters</span>
                   </button>
 
                   <button
@@ -550581,8 +550633,8 @@ export default function App() {
               <button type="button" className="play-again" onClick={reset}>
                 {gameMode === "rush"
                   ? "run again"
-                  : gameMode === "shortrush"
-                    ? "start shortrush"
+                  : gameMode === "alphabet"
+                    ? "start alphabet"
                     : gameMode === "zen"
                       ? "start zen game"
                       : "play again"}
@@ -550597,8 +550649,8 @@ export default function App() {
                 <small>
                   {gameMode === "rush"
                     ? "RUSH"
-                    : gameMode === "shortrush"
-                      ? "SHORTRUSH"
+                    : gameMode === "alphabet"
+                      ? "ALPHABET"
                       : gameMode === "zen"
                         ? "ZEN MODE"
                         : "TIME LEFT"}
@@ -550612,10 +550664,12 @@ export default function App() {
 
                 {gameMode === "zen" && <div className="timer">∞</div>}
 
-                {(gameMode === "rush" || gameMode === "shortrush") && (
-                  <div className="timer">
-                    {rushWords}/{gameMode === "shortrush" ? 5 : 10}
-                  </div>
+                {gameMode === "rush" && (
+                  <div className="timer">{rushWords}/10</div>
+                )}
+
+                {gameMode === "alphabet" && (
+                  <div className="timer">{letters.size}/26</div>
                 )}
               </div>
             </div>
@@ -550661,7 +550715,7 @@ export default function App() {
 
         {/* ==================== A-Z TRACKER ==================== */}
 
-        {started && gameMode == "timed" && (
+        {started && (gameMode === "timed" || gameMode === "alphabet") && (
           <>
             <div className="divider" />
 
