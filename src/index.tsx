@@ -550135,8 +550135,7 @@ export default function App() {
     <main>
       <header>
         <div className="game-title" onClick={goToStart}>
-          <b>BOMB PARTY</b>
-          <span> SOLO</span>
+          <b>WORD TIMER</b>
         </div>
 
         <div className="stats">
@@ -550249,7 +550248,7 @@ export default function App() {
             <div className="results-header">
               <small>how to play</small>
 
-              <h2>bomb party</h2>
+              <h2>word timer</h2>
 
               <p>find words containing the letters shown on screen.</p>
             </div>
