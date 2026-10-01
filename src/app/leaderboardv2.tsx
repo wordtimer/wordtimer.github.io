@@ -6,6 +6,7 @@ const SUPABASE_KEY = "sb_publishable_mB2ZU7RWDpQdPA-mIh8tKw_oxs1_2_B";
 export const MAX_NAME_LENGTH = 15;
 
 export type RankedMode = "timed" | "rush" | "alphabet";
+export type Period = "alltime" | "weekly";
 
 export const isRankedMode = (mode: string): mode is RankedMode =>
   mode === "timed" || mode === "rush" || mode === "alphabet";
@@ -28,6 +29,11 @@ const MODE_LABELS: Record<RankedMode, string> = {
   timed: "timed",
   rush: "rush",
   alphabet: "a–z rush",
+};
+
+const PERIOD_LABELS: Record<Period, string> = {
+  alltime: "all-time",
+  weekly: "weekly",
 };
 
 async function rpc<T>(fn: string, args: Record<string, unknown>): Promise<T> {
@@ -54,18 +60,21 @@ export const wouldQualify = (
   difficulty: string,
   roundTime: number | null,
   score: number,
+  period: Period,
 ) =>
   rpc<boolean>("would_qualify", {
     p_mode: mode,
     p_difficulty: difficulty,
     p_round_time: mode === "timed" ? roundTime : null,
     p_score: score,
+    p_period: period,
   });
 
 export async function fetchLeaderboard(
   mode: RankedMode,
   difficulty: string,
   roundTime: number | null,
+  period: Period,
 ) {
   const rows = await rpc<
     {
@@ -78,6 +87,7 @@ export async function fetchLeaderboard(
     p_mode: mode,
     p_difficulty: difficulty,
     p_round_time: mode === "timed" ? roundTime : null,
+    p_period: period,
   });
 
   return rows.map(
@@ -109,6 +119,12 @@ export const submitScore = (
     p_color: color,
   });
 
+export const getRunRank = (runId: string, period: Period) =>
+  rpc<number | null>("get_run_rank", {
+    p_run_id: runId,
+    p_period: period,
+  });
+
 export function formatScore(mode: RankedMode, score: number) {
   return mode === "timed" ? `${score} words` : `${(score / 1000).toFixed(2)}s`;
 }
@@ -117,6 +133,7 @@ type LeaderboardProps = {
   mode: string;
   difficulty: string;
   roundTime?: number | null;
+  period?: Period;
   refreshKey?: number;
   highlightRank?: number | null;
 };
@@ -125,6 +142,7 @@ export function Leaderboard({
   mode,
   difficulty,
   roundTime = null,
+  period = "alltime",
   refreshKey = 0,
   highlightRank = null,
 }: LeaderboardProps) {
@@ -139,7 +157,12 @@ export function Leaderboard({
     setEntries(null);
     setFailed(false);
 
-    fetchLeaderboard(mode, difficulty, mode === "timed" ? roundTime : null)
+    fetchLeaderboard(
+      mode,
+      difficulty,
+      mode === "timed" ? roundTime : null,
+      period,
+    )
       .then((rows) => {
         if (!cancelled) setEntries(rows);
       })
@@ -152,7 +175,7 @@ export function Leaderboard({
     return () => {
       cancelled = true;
     };
-  }, [mode, difficulty, roundTime, refreshKey]);
+  }, [mode, difficulty, roundTime, period, refreshKey]);
 
   if (!isRankedMode(mode)) {
     return (
@@ -165,7 +188,10 @@ export function Leaderboard({
 
   return (
     <div className="leaderboard">
-      <small>leaderboard</small>
+      <small>
+        {PERIOD_LABELS[period]} leaderboard
+        {period === "weekly" ? " · resets sunday 11pm" : ""}
+      </small>
 
       <h2>
         {MODE_LABELS[mode]}
@@ -213,6 +239,8 @@ type ModalProps = {
   difficulty: string;
   roundTime?: number | null;
   score: number;
+  qualifiesAllTime: boolean;
+  qualifiesWeekly: boolean;
   onSubmit: (name: string, color: string) => Promise<void>;
   onClose: () => void;
 };
@@ -222,6 +250,8 @@ export function LeaderboardSubmitModal({
   difficulty,
   roundTime = null,
   score,
+  qualifiesAllTime,
+  qualifiesWeekly,
   onSubmit,
   onClose,
 }: ModalProps) {
@@ -231,6 +261,13 @@ export function LeaderboardSubmitModal({
   const [error, setError] = useState("");
 
   const trimmed = name.trim();
+
+  const title =
+    qualifiesAllTime && qualifiesWeekly
+      ? "you made the all-time and weekly leaderboards!"
+      : qualifiesWeekly
+        ? "you made the weekly leaderboard!"
+        : "you made the all-time leaderboard!";
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -266,7 +303,7 @@ export function LeaderboardSubmitModal({
           {DIFFICULTY_LABELS[difficulty] ?? difficulty}
         </small>
 
-        <h2 id="lb-modal-title">you made the leaderboard!</h2>
+        <h2 id="lb-modal-title">{title}</h2>
 
         <p>
           your result: <strong>{formatScore(mode, score)}</strong>

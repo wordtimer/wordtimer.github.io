@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Leaderboard,
   LeaderboardSubmitModal,
+  Period,
+  getRunRank,
   isRankedMode,
   submitScore,
   wouldQualify,
@@ -549553,6 +549555,7 @@ async function countGamePlayed(
 }
 
 type Difficulty = "superEasy" | "easy" | "medium" | "hard";
+type GameMode = "timed" | "zen" | "rush" | "alphabet";
 
 const DIFFICULTY_LIMITS: Record<Difficulty, number> = {
   superEasy: 5000,
@@ -549560,6 +549563,23 @@ const DIFFICULTY_LIMITS: Record<Difficulty, number> = {
   medium: 500,
   hard: 200,
 };
+
+const DIFFICULTY_OPTIONS: { value: Difficulty; label: string; hint: string }[] =
+  [
+    { value: "superEasy", label: "super easy", hint: "5,000+ words" },
+    { value: "easy", label: "easy", hint: "1,000+ words" },
+    { value: "medium", label: "medium", hint: "500+ words" },
+    { value: "hard", label: "hard", hint: "200+ words" },
+  ];
+
+const MODE_OPTIONS: { value: GameMode; label: string; hint: string }[] = [
+  { value: "timed", label: "timed", hint: "beat the clock" },
+  { value: "rush", label: "rush", hint: "10 words, fastest time" },
+  { value: "alphabet", label: "alphabet", hint: "collect 26 letters" },
+  { value: "zen", label: "zen", hint: "no timer or lives" },
+];
+
+const TIME_OPTIONS = [5, 10, 20, 60];
 
 type PromptData = {
   count: number;
@@ -549666,14 +549686,20 @@ export default function App() {
     difficulty: Difficulty;
     roundTime: number | null;
     score: number;
+    allTime: boolean;
+    weekly: boolean;
   } | null>(null);
 
   const [boardRefresh, setBoardRefresh] = useState(0);
-  const [highlightRank, setHighlightRank] = useState<number | null>(null);
+
+  const [boardPeriod, setBoardPeriod] = useState<Period>("alltime");
+
+  const [highlightRanks, setHighlightRanks] = useState<{
+    alltime: number | null;
+    weekly: number | null;
+  }>({ alltime: null, weekly: null });
 
   const [roundTime, setRoundTime] = useState<number>(10);
-
-  type GameMode = "timed" | "zen" | "rush" | "alphabet";
 
   const [gameMode, setGameMode] = useState<GameMode>("rush");
 
@@ -549777,22 +549803,23 @@ export default function App() {
     runIdRef.current = null;
 
     const finalScore = isRush ? Math.round((rushTotalTime ?? 0) * 1000) : score;
+    const roundTimeArg = gameMode === "timed" ? roundTime : null;
 
-    wouldQualify(
-      gameMode,
-      difficulty,
-      gameMode === "timed" ? roundTime : null,
-      finalScore,
-    )
-      .then((qualifies) => {
-        if (!qualifies) return;
+    Promise.all([
+      wouldQualify(gameMode, difficulty, roundTimeArg, finalScore, "alltime"),
+      wouldQualify(gameMode, difficulty, roundTimeArg, finalScore, "weekly"),
+    ])
+      .then(([allTime, weekly]) => {
+        if (!allTime && !weekly) return;
 
         setPendingRun({
           runId,
           mode: gameMode,
           difficulty,
-          roundTime: gameMode === "timed" ? roundTime : null,
+          roundTime: roundTimeArg,
           score: finalScore,
+          allTime,
+          weekly,
         });
       })
       .catch((error) => {
@@ -549984,7 +550011,7 @@ export default function App() {
     runIdRef.current = crypto.randomUUID();
 
     setPendingRun(null);
-    setHighlightRank(null);
+    setHighlightRanks({ alltime: null, weekly: null });
 
     const startingLives =
       difficulty === "superEasy" ? 5 : difficulty === "easy" ? 4 : 3;
@@ -550027,7 +550054,7 @@ export default function App() {
   const handleLeaderboardSubmit = async (name: string, color: string) => {
     if (!pendingRun) return;
 
-    const rank = await submitScore(
+    await submitScore(
       pendingRun.runId,
       pendingRun.mode,
       pendingRun.difficulty,
@@ -550037,9 +550064,18 @@ export default function App() {
       color,
     );
 
+    const [allTimeRank, weeklyRank] = await Promise.all([
+      pendingRun.allTime
+        ? getRunRank(pendingRun.runId, "alltime").catch(() => null)
+        : null,
+      pendingRun.weekly
+        ? getRunRank(pendingRun.runId, "weekly").catch(() => null)
+        : null,
+    ]);
+
     setGameMode(pendingRun.mode);
     setDifficulty(pendingRun.difficulty);
-    setHighlightRank(rank);
+    setHighlightRanks({ alltime: allTimeRank, weekly: weeklyRank });
     setBoardRefresh((n) => n + 1);
     setPendingRun(null);
   };
@@ -550048,12 +550084,109 @@ export default function App() {
     startGame();
   };
 
+  useEffect(() => {
+    const handleSpacebar = (event: KeyboardEvent) => {
+      if (event.code !== "Space" || event.repeat) return;
+
+      if (showRules || showLeaderboard || pendingRun) return;
+
+      const target = event.target as HTMLElement | null;
+
+      if (
+        target &&
+        (target.isContentEditable ||
+          ["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(target.tagName))
+      ) {
+        return;
+      }
+
+      if (!started || gameOver) {
+        event.preventDefault();
+        startGame();
+      }
+    };
+
+    window.addEventListener("keydown", handleSpacebar);
+
+    return () => {
+      window.removeEventListener("keydown", handleSpacebar);
+    };
+  }, [started, gameOver, showRules, showLeaderboard, pendingRun]);
+
   const hearts = useMemo(() => "♥".repeat(Math.max(0, lives)), [lives]);
 
   const averageTime =
     answerTimes.length > 0
       ? answerTimes.reduce((sum, value) => sum + value, 0) / answerTimes.length
       : 0;
+
+  const renderDifficulty = () => (
+    <div className="setting">
+      <small>difficulty</small>
+
+      <div className="option-grid">
+        {DIFFICULTY_OPTIONS.map((option) => (
+          <button
+            type="button"
+            key={option.value}
+            className={
+              difficulty === option.value ? "option selected" : "option"
+            }
+            onClick={() => setDifficulty(option.value)}
+          >
+            <strong>{option.label}</strong>
+            <span>{option.hint}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
+  const renderMode = () => (
+    <div className="setting">
+      <small>mode</small>
+
+      <div className="option-grid mode-options">
+        {MODE_OPTIONS.map((option) => (
+          <button
+            type="button"
+            key={option.value}
+            className={gameMode === option.value ? "option selected" : "option"}
+            onClick={() => setGameMode(option.value)}
+          >
+            <strong>{option.label}</strong>
+            <span>{option.hint}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
+  const renderTime = () => (
+    <div className="setting">
+      <small>time per word</small>
+
+      <div className="option-grid time-options">
+        {TIME_OPTIONS.map((seconds) => (
+          <button
+            type="button"
+            key={seconds}
+            className={
+              gameMode === "timed" && roundTime === seconds
+                ? "option selected"
+                : "option"
+            }
+            onClick={() => {
+              setRoundTime(seconds);
+              setGameMode("timed");
+            }}
+          >
+            <strong>{seconds}s</strong>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
 
   return (
     <main>
@@ -550141,6 +550274,15 @@ export default function App() {
 
               <p>play without a timer or lives. finish whenever you want.</p>
             </div>
+
+            <div className="rules-section">
+              <strong>weekly leaderboard</strong>
+
+              <p>
+                weekly scores reset every sunday at 11pm central. all-time
+                scores are kept.
+              </p>
+            </div>
           </div>
         </div>
       )}
@@ -550166,10 +550308,34 @@ export default function App() {
 
             <h2>view leaderboard</h2>
 
+            <div className="option-grid">
+              <button
+                type="button"
+                className={
+                  boardPeriod === "alltime" ? "option selected" : "option"
+                }
+                onClick={() => setBoardPeriod("alltime")}
+              >
+                <strong>all-time</strong>
+              </button>
+
+              <button
+                type="button"
+                className={
+                  boardPeriod === "weekly" ? "option selected" : "option"
+                }
+                onClick={() => setBoardPeriod("weekly")}
+              >
+                <strong>weekly</strong>
+                <span>resets sunday 11pm</span>
+              </button>
+            </div>
+
             <Leaderboard
               mode={gameMode}
               difficulty={difficulty}
               roundTime={gameMode === "timed" ? roundTime : null}
+              period={boardPeriod}
               refreshKey={boardRefresh}
             />
           </div>
@@ -550205,138 +550371,18 @@ export default function App() {
                 </h2>
               </div>
 
-              <div className="setting">
-                <small>difficulty</small>
+              {renderDifficulty()}
 
-                <div className="option-grid">
-                  <button
-                    type="button"
-                    className={
-                      difficulty === "superEasy" ? "option selected" : "option"
-                    }
-                    onClick={() => setDifficulty("superEasy")}
-                  >
-                    <strong>super easy</strong>
-                    <span>5,000+ words</span>
-                  </button>
+              {renderMode()}
 
-                  <button
-                    type="button"
-                    className={
-                      difficulty === "easy" ? "option selected" : "option"
-                    }
-                    onClick={() => setDifficulty("easy")}
-                  >
-                    <strong>easy</strong>
-                    <span>1,000+ words</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    className={
-                      difficulty === "medium" ? "option selected" : "option"
-                    }
-                    onClick={() => setDifficulty("medium")}
-                  >
-                    <strong>medium</strong>
-                    <span>500+ words</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    className={
-                      difficulty === "hard" ? "option selected" : "option"
-                    }
-                    onClick={() => setDifficulty("hard")}
-                  >
-                    <strong>hard</strong>
-                    <span>200+ words</span>
-                  </button>
-                </div>
-              </div>
-
-              <div className="setting">
-                <small>mode</small>
-
-                <div className="option-grid mode-options">
-                  <button
-                    type="button"
-                    className={
-                      gameMode === "timed" ? "option selected" : "option"
-                    }
-                    onClick={() => setGameMode("timed")}
-                  >
-                    <strong>timed</strong>
-                    <span>beat the clock</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    className={
-                      gameMode === "rush" ? "option selected" : "option"
-                    }
-                    onClick={() => setGameMode("rush")}
-                  >
-                    <strong>rush</strong>
-                    <span>10 words, fastest time</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    className={
-                      gameMode === "alphabet" ? "option selected" : "option"
-                    }
-                    onClick={() => setGameMode("alphabet")}
-                  >
-                    <strong>alphabet</strong>
-                    <span>collect 26 letters</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    className={
-                      gameMode === "zen" ? "option selected" : "option"
-                    }
-                    onClick={() => setGameMode("zen")}
-                  >
-                    <strong>zen</strong>
-                    <span>no timer or lives</span>
-                  </button>
-                </div>
-              </div>
-
-              {gameMode === "timed" && (
-                <div className="setting">
-                  <small>time per word</small>
-
-                  <div className="option-grid time-options">
-                    {[5, 10, 20, 60].map((seconds) => (
-                      <button
-                        type="button"
-                        key={seconds}
-                        className={
-                          gameMode === "timed" && roundTime === seconds
-                            ? "option selected"
-                            : "option"
-                        }
-                        onClick={() => {
-                          setRoundTime(seconds);
-                          setGameMode("timed");
-                        }}
-                      >
-                        <strong>{seconds}s</strong>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
+              {gameMode === "timed" && renderTime()}
 
               <button
                 type="button"
                 className="play-again start-button"
                 onClick={startGame}
               >
-                start game
+                start game (space)
               </button>
 
               <button
@@ -550419,13 +550465,31 @@ export default function App() {
 
             <div className="divider" />
 
-            <Leaderboard
-              mode={gameMode}
-              difficulty={difficulty}
-              roundTime={gameMode === "timed" ? roundTime : null}
-              refreshKey={boardRefresh}
-              highlightRank={highlightRank}
-            />
+            {isRankedMode(gameMode) ? (
+              <>
+                <Leaderboard
+                  mode={gameMode}
+                  difficulty={difficulty}
+                  roundTime={gameMode === "timed" ? roundTime : null}
+                  period="weekly"
+                  refreshKey={boardRefresh}
+                  highlightRank={highlightRanks.alltime}
+                />
+
+                <div className="divider" />
+
+                <Leaderboard
+                  mode={gameMode}
+                  difficulty={difficulty}
+                  roundTime={gameMode === "timed" ? roundTime : null}
+                  period="alltime"
+                  refreshKey={boardRefresh}
+                  highlightRank={highlightRanks.weekly}
+                />
+              </>
+            ) : (
+              <Leaderboard mode={gameMode} difficulty={difficulty} />
+            )}
 
             <div className="divider" />
 
@@ -550436,133 +550500,15 @@ export default function App() {
                 <h2>choose your settings</h2>
               </div>
 
-              <div className="setting">
-                <small>difficulty</small>
+              {renderDifficulty()}
 
-                <div className="option-grid">
-                  <button
-                    type="button"
-                    className={
-                      difficulty === "superEasy" ? "option selected" : "option"
-                    }
-                    onClick={() => setDifficulty("superEasy")}
-                  >
-                    <strong>super easy</strong>
-                    <span>5,000+ words</span>
-                  </button>
+              {renderTime()}
 
-                  <button
-                    type="button"
-                    className={
-                      difficulty === "easy" ? "option selected" : "option"
-                    }
-                    onClick={() => setDifficulty("easy")}
-                  >
-                    <strong>easy</strong>
-                    <span>1,000+ words</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    className={
-                      difficulty === "medium" ? "option selected" : "option"
-                    }
-                    onClick={() => setDifficulty("medium")}
-                  >
-                    <strong>medium</strong>
-                    <span>500+ words</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    className={
-                      difficulty === "hard" ? "option selected" : "option"
-                    }
-                    onClick={() => setDifficulty("hard")}
-                  >
-                    <strong>hard</strong>
-                    <span>200+ words</span>
-                  </button>
-                </div>
-              </div>
-
-              <div className="setting">
-                <small>time per word</small>
-
-                <div className="option-grid time-options">
-                  {[5, 10, 20, 60].map((seconds) => (
-                    <button
-                      type="button"
-                      key={seconds}
-                      className={
-                        gameMode === "timed" && roundTime === seconds
-                          ? "option selected"
-                          : "option"
-                      }
-                      onClick={() => {
-                        setRoundTime(seconds);
-                        setGameMode("timed");
-                      }}
-                    >
-                      <strong>{seconds}s</strong>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="setting">
-                <small>mode</small>
-
-                <div className="option-grid mode-options">
-                  <button
-                    type="button"
-                    className={
-                      gameMode === "timed" ? "option selected" : "option"
-                    }
-                    onClick={() => setGameMode("timed")}
-                  >
-                    <strong>timed</strong>
-                    <span>beat the clock</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    className={
-                      gameMode === "rush" ? "option selected" : "option"
-                    }
-                    onClick={() => setGameMode("rush")}
-                  >
-                    <strong>rush</strong>
-                    <span>10 words, fastest time</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    className={
-                      gameMode === "alphabet" ? "option selected" : "option"
-                    }
-                    onClick={() => setGameMode("alphabet")}
-                  >
-                    <strong>alphabet</strong>
-                    <span>collect 26 letters</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    className={
-                      gameMode === "zen" ? "option selected" : "option"
-                    }
-                    onClick={() => setGameMode("zen")}
-                  >
-                    <strong>zen</strong>
-                    <span>no timer or lives</span>
-                  </button>
-                </div>
-              </div>
+              {renderMode()}
 
               <button type="button" className="play-again" onClick={reset}>
                 {gameMode === "rush"
-                  ? "run again"
+                  ? "run again (space)"
                   : gameMode === "alphabet"
                     ? "start alphabet"
                     : gameMode === "zen"
@@ -550608,7 +550554,7 @@ export default function App() {
 
               <strong>{prompt.toUpperCase()}</strong>
 
-              <p>put these letters anywhere in your word</p>
+              <p>put these letters in order anywhere in your word</p>
             </div>
 
             <form onSubmit={submit}>
@@ -550681,6 +550627,8 @@ export default function App() {
           difficulty={pendingRun.difficulty}
           roundTime={pendingRun.roundTime}
           score={pendingRun.score}
+          qualifiesAllTime={pendingRun.allTime}
+          qualifiesWeekly={pendingRun.weekly}
           onSubmit={handleLeaderboardSubmit}
           onClose={() => setPendingRun(null)}
         />
