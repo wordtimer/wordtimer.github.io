@@ -1,15 +1,11 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState } from "react";
 
 const SUPABASE_URL = "https://frnjbjhigceptzwtmyax.supabase.co";
 const SUPABASE_KEY = "sb_publishable_mB2ZU7RWDpQdPA-mIh8tKw_oxs1_2_B";
+const MAX_NAME_LENGTH = 15;
 
-export const MAX_NAME_LENGTH = 15;
-
-export type RankedMode = "timed" | "rush" | "alphabet";
+export type RankedMode = "timed" | "rush" | "alphabet" | "sevenRush";
 export type Period = "alltime" | "weekly";
-
-export const isRankedMode = (mode: string): mode is RankedMode =>
-  mode === "timed" || mode === "rush" || mode === "alphabet";
 
 export type LeaderboardEntry = {
   name: string;
@@ -19,68 +15,77 @@ export type LeaderboardEntry = {
 };
 
 const DIFFICULTY_LABELS: Record<string, string> = {
-  superEasy: "super easy",
-  easy: "easy",
-  medium: "medium",
+  superEasy: "easy",
   hard: "hard",
 };
 
 const MODE_LABELS: Record<RankedMode, string> = {
   timed: "timed",
   rush: "rush",
-  alphabet: "a–z rush",
+  alphabet: "alphabet",
+  sevenRush: "sixrush",
 };
 
-const PERIOD_LABELS: Record<Period, string> = {
-  alltime: "all-time",
-  weekly: "weekly",
-};
+export function isRankedMode(mode: string): mode is RankedMode {
+  return (
+    mode === "timed" ||
+    mode === "rush" ||
+    mode === "alphabet" ||
+    mode === "sevenRush"
+  );
+}
 
 async function rpc<T>(fn: string, args: Record<string, unknown>): Promise<T> {
   const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
     method: "POST",
     headers: {
-      "Content-Type": "application/json",
       apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${SUPABASE_KEY}`,
+      "Content-Type": "application/json",
     },
     body: JSON.stringify(args),
   });
 
-  const data = await response.json().catch(() => null);
-
   if (!response.ok) {
-    throw new Error(data?.message ?? `request failed (${response.status})`);
+    const text = await response.text();
+    throw new Error(`${fn} failed (${response.status}): ${text}`);
   }
 
-  return data as T;
+  return response.json() as Promise<T>;
 }
 
-export const wouldQualify = (
+export async function wouldQualify(
   mode: RankedMode,
   difficulty: string,
   roundTime: number | null,
   score: number,
   period: Period,
-) =>
-  rpc<boolean>("would_qualify", {
+) {
+  return rpc<boolean>("would_qualify", {
     p_mode: mode,
     p_difficulty: difficulty,
     p_round_time: mode === "timed" ? roundTime : null,
     p_score: score,
     p_period: period,
   });
+}
 
 export async function fetchLeaderboard(
   mode: RankedMode,
   difficulty: string,
   roundTime: number | null,
-  period: Period,
+  period: Period = "alltime",
 ) {
   const rows = await rpc<
     {
+      id: number;
+      run_id: string;
+      mode: string;
+      difficulty: string;
+      round_time: number | null;
+      score: number;
       name: string;
       color: string;
-      score: number;
       created_at: string;
     }[]
   >("get_leaderboard", {
@@ -90,17 +95,15 @@ export async function fetchLeaderboard(
     p_period: period,
   });
 
-  return rows.map(
-    (row): LeaderboardEntry => ({
-      name: row.name,
-      color: row.color,
-      score: row.score,
-      createdAt: row.created_at,
-    }),
-  );
+  return rows.map((row) => ({
+    name: row.name,
+    color: row.color,
+    score: row.score,
+    createdAt: row.created_at,
+  }));
 }
 
-export const submitScore = (
+export async function submitScore(
   runId: string,
   mode: RankedMode,
   difficulty: string,
@@ -108,29 +111,35 @@ export const submitScore = (
   score: number,
   name: string,
   color: string,
-) =>
-  rpc<number | null>("submit_score", {
+) {
+  return rpc<number>("submit_score", {
     p_run_id: runId,
     p_mode: mode,
     p_difficulty: difficulty,
     p_round_time: mode === "timed" ? roundTime : null,
     p_score: score,
-    p_name: name,
+    p_name: name.trim().slice(0, MAX_NAME_LENGTH),
     p_color: color,
   });
+}
 
-export const getRunRank = (runId: string, period: Period) =>
-  rpc<number | null>("get_run_rank", {
+export async function getRunRank(runId: string, period: Period = "alltime") {
+  return rpc<number>("get_run_rank", {
     p_run_id: runId,
     p_period: period,
   });
+}
 
-export function formatScore(mode: RankedMode, score: number) {
-  return mode === "timed" ? `${score} words` : `${(score / 1000).toFixed(2)}s`;
+function formatScore(mode: RankedMode, score: number) {
+  if (mode === "timed") {
+    return `${score} words`;
+  }
+
+  return `${(score / 1000).toFixed(2)}s`;
 }
 
 type LeaderboardProps = {
-  mode: string;
+  mode: RankedMode;
   difficulty: string;
   roundTime?: number | null;
   period?: Period;
@@ -146,30 +155,26 @@ export function Leaderboard({
   refreshKey = 0,
   highlightRank = null,
 }: LeaderboardProps) {
-  const [entries, setEntries] = useState<LeaderboardEntry[] | null>(null);
-  const [failed, setFailed] = useState(false);
+  const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!isRankedMode(mode)) return;
-
     let cancelled = false;
 
-    setEntries(null);
-    setFailed(false);
+    setLoading(true);
+    setError(null);
 
-    fetchLeaderboard(
-      mode,
-      difficulty,
-      mode === "timed" ? roundTime : null,
-      period,
-    )
+    fetchLeaderboard(mode, difficulty, roundTime, period)
       .then((rows) => {
         if (!cancelled) setEntries(rows);
       })
-      .catch((error) => {
-        console.error("LEADERBOARD ERROR:", error);
-
-        if (!cancelled) setFailed(true);
+      .catch((err) => {
+        console.error("LEADERBOARD FETCH ERROR:", err);
+        if (!cancelled) setError("couldn't load leaderboard");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
       });
 
     return () => {
@@ -177,178 +182,153 @@ export function Leaderboard({
     };
   }, [mode, difficulty, roundTime, period, refreshKey]);
 
-  if (!isRankedMode(mode)) {
-    return (
-      <div className="leaderboard">
-        <small>leaderboard</small>
-        <p className="lb-empty">zen mode isn't ranked.</p>
-      </div>
-    );
-  }
-
   return (
     <div className="leaderboard">
-      <small>
-        {PERIOD_LABELS[period]} leaderboard
-        {period === "weekly" ? " · resets sunday 11pm" : ""}
-      </small>
+      <div className="section-heading">
+        <div>
+          <small>{period === "weekly" ? "weekly" : "all-time"}</small>
+          <h2>
+            {MODE_LABELS[mode]} - {DIFFICULTY_LABELS[difficulty] ?? difficulty}
+          </h2>
+        </div>
+      </div>
 
-      <h2>
-        {MODE_LABELS[mode]}
-        {mode === "timed" && roundTime !== null ? ` · ${roundTime}s` : ""}
-        {" · "}
-        {DIFFICULTY_LABELS[difficulty] ?? difficulty}
-      </h2>
-
-      {failed && <p className="lb-empty">couldn't load the leaderboard.</p>}
-
-      {!failed && entries === null && <p className="lb-empty">loading…</p>}
-
-      {entries !== null && entries.length === 0 && (
-        <p className="lb-empty">no scores yet. be the first!</p>
-      )}
-
-      {entries !== null && entries.length > 0 && (
+      {loading ? (
+        <p className="lb-empty">loading...</p>
+      ) : error ? (
+        <p className="lb-empty">{error}</p>
+      ) : entries.length === 0 ? (
+        <p className="lb-empty">no scores yet.</p>
+      ) : (
         <ol className="lb-list">
-          {entries.map((entry, index) => (
-            <li
-              key={`${entry.createdAt}-${index}`}
-              className={
-                highlightRank === index + 1 ? "lb-row lb-you" : "lb-row"
-              }
-            >
-              <span className="lb-rank">{index + 1}</span>
+          {entries.map((entry, index) => {
+            const rank = index + 1;
+            const isYou = highlightRank === rank;
 
-              <span className="lb-dot" style={{ background: entry.color }} />
-
-              <span className="lb-name">{entry.name}</span>
-
-              <strong className="lb-score">
-                {formatScore(mode, entry.score)}
-              </strong>
-            </li>
-          ))}
+            return (
+              <li className={isYou ? "lb-row lb-you" : "lb-row"} key={`${entry.name}-${entry.createdAt}-${index}`}>
+                <span className="lb-rank">{rank}.</span>
+                <span
+                  className="lb-dot"
+                  style={{ backgroundColor: entry.color }}
+                  aria-hidden="true"
+                />
+                <span className="lb-name">{entry.name}</span>
+                <span className="lb-score">{formatScore(mode, entry.score)}</span>
+              </li>
+            );
+          })}
         </ol>
       )}
     </div>
   );
 }
 
-type ModalProps = {
+type LeaderboardSubmitModalProps = {
   mode: RankedMode;
   difficulty: string;
-  roundTime?: number | null;
+  roundTime: number | null;
   score: number;
   qualifiesAllTime: boolean;
   qualifiesWeekly: boolean;
-  onSubmit: (name: string, color: string) => Promise<void>;
+  onSubmit: (name: string, color: string) => Promise<void> | void;
   onClose: () => void;
 };
 
 export function LeaderboardSubmitModal({
   mode,
   difficulty,
-  roundTime = null,
+  roundTime,
   score,
   qualifiesAllTime,
   qualifiesWeekly,
   onSubmit,
   onClose,
-}: ModalProps) {
-  const [name, setName] = useState("");
+}: LeaderboardSubmitModalProps) {
+  const [name, setName] = useState("wordtimer");
   const [color, setColor] = useState("#4f8cff");
-  const [busy, setBusy] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
-  const trimmed = name.trim();
-
-  const title =
-    qualifiesAllTime && qualifiesWeekly
-      ? "you made the all-time and weekly leaderboards!"
-      : qualifiesWeekly
-        ? "you made the weekly leaderboard!"
-        : "you made the all-time leaderboard!";
-
-  const handleSubmit = async (event: FormEvent) => {
+  const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
 
-    if (!trimmed || busy) return;
+    const trimmed = name.trim();
 
-    setBusy(true);
+    if (!trimmed) {
+      setError("enter a name.");
+      return;
+    }
+
+    if (trimmed.length > MAX_NAME_LENGTH) {
+      setError(`name must be ${MAX_NAME_LENGTH} characters or fewer.`);
+      return;
+    }
+
+    setSubmitting(true);
     setError("");
 
     try {
       await onSubmit(trimmed, color);
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "couldn't submit your score.",
-      );
-
-      setBusy(false);
+      console.error("LEADERBOARD SUBMIT ERROR:", err);
+      setError("couldn't submit score. try again.");
+    } finally {
+      setSubmitting(false);
     }
   };
 
   return (
-    <div className="rules-overlay">
-      <div
-        className="rules-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="lb-modal-title"
-      >
-        <small>
-          {MODE_LABELS[mode]}
-          {mode === "timed" && roundTime !== null ? ` · ${roundTime}s` : ""}
-          {" · "}
-          {DIFFICULTY_LABELS[difficulty] ?? difficulty}
-        </small>
+    <div className="rules-overlay" onClick={onClose}>
+      <div className="rules-modal" onClick={(event) => event.stopPropagation()}>
+        <button type="button" className="rules-close" onClick={onClose}>
+          ×
+        </button>
 
-        <h2 id="lb-modal-title">{title}</h2>
+        <small>new leaderboard score</small>
+        <h2>you made the leaderboard!!!</h2>
 
         <p>
-          your result: <strong>{formatScore(mode, score)}</strong>
+          {MODE_LABELS[mode]} - {DIFFICULTY_LABELS[difficulty] ?? difficulty}
+          {mode === "timed" && roundTime !== null ? ` - ${roundTime}s` : ""}
         </p>
 
-        <form onSubmit={handleSubmit} className="lb-form">
-          <label htmlFor="lb-name">display name</label>
+        <p>
+          score: <strong>{formatScore(mode, score)}</strong>
+        </p>
 
+        <p className="rule">
+          {qualifiesAllTime && qualifiesWeekly
+            ? "your score qualifies for both all-time and weekly."
+            : qualifiesWeekly
+              ? "your score qualifies for the weekly leaderboard."
+              : "your score qualifies for the all-time leaderboard."}
+        </p>
+
+        <form className="lb-form" onSubmit={handleSubmit}>
+          <label htmlFor="leaderboard-name">display name</label>
           <input
-            id="lb-name"
-            type="text"
+            id="leaderboard-name"
             value={name}
-            onChange={(e) => setName(e.target.value)}
+            onChange={(event) => setName(event.target.value.slice(0, MAX_NAME_LENGTH))}
             maxLength={MAX_NAME_LENGTH}
-            autoComplete="off"
-            autoFocus
             placeholder="your name"
+            autoFocus
+            autoComplete="off"
           />
 
-          <label htmlFor="lb-color">your color</label>
-
+          <label htmlFor="leaderboard-color">color</label>
           <input
-            id="lb-color"
+            id="leaderboard-color"
             type="color"
             value={color}
-            onChange={(e) => setColor(e.target.value)}
+            onChange={(event) => setColor(event.target.value)}
           />
 
           {error && <div className="message">{error}</div>}
 
-          <button
-            type="submit"
-            className="play-again"
-            disabled={!trimmed || busy}
-          >
-            {busy ? "submitting…" : "submit"}
-          </button>
-
-          <button
-            type="button"
-            className="lb-skip"
-            onClick={onClose}
-            disabled={busy}
-          >
-            skip
+          <button type="submit" className="play-again" disabled={submitting}>
+            {submitting ? "submitting..." : "submit score"}
           </button>
         </form>
       </div>

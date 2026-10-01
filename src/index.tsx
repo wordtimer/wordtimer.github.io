@@ -549538,7 +549538,7 @@ async function loadGamesPlayed(
 
     const data = await response.json();
     setGamesPlayed(Number(data.value) || 0);
-  } catch {}
+  } catch { }
 }
 
 async function countGamePlayed(
@@ -549551,40 +549551,53 @@ async function countGamePlayed(
 
     const data = await response.json();
     setGamesPlayed(Number(data.value) || 0);
-  } catch {}
+  } catch { }
 }
 
-type Difficulty = "superEasy" | "easy" | "medium" | "hard";
-type GameMode = "timed" | "zen" | "rush" | "alphabet";
+type Difficulty = "superEasy" | "hard";
+type GameMode = "timed" | "zen" | "rush" | "alphabet" | "sevenRush";
 
 const DIFFICULTY_LIMITS: Record<Difficulty, number> = {
   superEasy: 5000,
-  easy: 1000,
-  medium: 500,
   hard: 200,
 };
 
 const DIFFICULTY_OPTIONS: { value: Difficulty; label: string; hint: string }[] =
   [
-    { value: "superEasy", label: "super easy", hint: "5,000+ words" },
-    { value: "easy", label: "easy", hint: "1,000+ words" },
-    { value: "medium", label: "medium", hint: "500+ words" },
+    { value: "superEasy", label: "easy", hint: "5,000+ words" },
     { value: "hard", label: "hard", hint: "200+ words" },
   ];
 
 const MODE_OPTIONS: { value: GameMode; label: string; hint: string }[] = [
-  { value: "timed", label: "timed", hint: "beat the clock" },
   { value: "rush", label: "rush", hint: "10 words, fastest time" },
+  { value: "sevenRush", label: "sixrush", hint: "10 words, 6+ letters" },
+  { value: "timed", label: "timed", hint: "beat the clock" },
   { value: "alphabet", label: "alphabet", hint: "collect 26 letters" },
-  { value: "zen", label: "zen", hint: "no timer or lives" },
+  { value: "zen", label: "zen", hint: "no timer or lives, not ranked" },
 ];
 
 const TIME_OPTIONS = [5, 10, 20, 60];
 
+function isRushMode(mode: GameMode) {
+  return mode === "rush" || mode === "alphabet" || mode === "sevenRush";
+}
+
 type PromptData = {
   count: number;
+  longCount: number;
   examples: string[];
+  longExamples: string[];
 };
+
+// sixrush only uses fragments where at least this share of the difficulty's
+// word minimum comes from 6+ letter words (easy: 5000 * 0.5 = 2500, hard: 200 * 0.5 = 100)
+const SEVEN_RUSH_LONG_RATIO = 0.5;
+
+function addExample(list: string[], word: string) {
+  if (list.length < 12 && !list.some((example) => example[0] === word[0])) {
+    list.push(word);
+  }
+}
 
 function buildPromptData() {
   const data = new Map<string, PromptData>();
@@ -549592,6 +549605,7 @@ function buildPromptData() {
   for (const word of DICTIONARY) {
     if (word.length < 2) continue;
 
+    const isLong = word.length >= 6;
     const fragments = new Set<string>();
 
     for (let i = 0; i < word.length - 1; i++) {
@@ -549603,24 +549617,24 @@ function buildPromptData() {
     }
 
     for (const fragment of fragments) {
-      const existing = data.get(fragment);
+      let entry = data.get(fragment);
 
-      if (existing) {
-        existing.count++;
+      if (!entry) {
+        entry = { count: 0, longCount: 0, examples: [], longExamples: [] };
+        data.set(fragment, entry);
+      }
 
-        const firstLetter = word[0];
+      entry.count++;
 
-        if (
-          existing.examples.length < 12 &&
-          !existing.examples.some((example) => example[0] === firstLetter)
-        ) {
-          existing.examples.push(word);
-        }
+      if (entry.examples.length === 0) {
+        entry.examples.push(word);
       } else {
-        data.set(fragment, {
-          count: 1,
-          examples: [word],
-        });
+        addExample(entry.examples, word);
+      }
+
+      if (isLong) {
+        entry.longCount++;
+        addExample(entry.longExamples, word);
       }
     }
   }
@@ -549630,20 +549644,33 @@ function buildPromptData() {
 
 const PROMPT_DATA = buildPromptData();
 
-function buildPromptPool(difficulty: Difficulty) {
+function buildPromptPool(difficulty: Difficulty, mode?: GameMode) {
   const minimum = DIFFICULTY_LIMITS[difficulty];
+  const sevenRush = mode === "sevenRush";
+  const longMinimum = Math.ceil(minimum * SEVEN_RUSH_LONG_RATIO);
 
   return [...PROMPT_DATA.entries()]
-    .filter(([, data]) => data.count >= minimum)
+    .filter(([, data]) => {
+      if (data.count < minimum) return false;
+
+      if (sevenRush) {
+        return (
+          data.longCount >= longMinimum &&
+          data.longExamples.length > 0
+        );
+      }
+
+      return true;
+    })
     .map(([fragment, data]) => ({
       fragment,
-      count: data.count,
-      examples: data.examples,
+      count: sevenRush ? data.longCount : data.count,
+      examples: sevenRush ? data.longExamples : data.examples,
     }));
 }
 
-function pickPrompt(difficulty: Difficulty) {
-  const pool = buildPromptPool(difficulty);
+function pickPrompt(difficulty: Difficulty, mode?: GameMode) {
+  const pool = buildPromptPool(difficulty, mode);
 
   if (!pool.length) {
     return {
@@ -549663,6 +549690,29 @@ function pickPrompt(difficulty: Difficulty) {
   }
 
   return weightedPool[Math.floor(Math.random() * weightedPool.length)];
+}
+
+// paste in the browser console via window.logPromptPools() to see pool sizes
+function logPromptPools() {
+  const modes: GameMode[] = ["rush", "sevenRush"];
+  const rows: Record<string, number | string>[] = [];
+
+  for (const difficulty of Object.keys(DIFFICULTY_LIMITS) as Difficulty[]) {
+    for (const mode of modes) {
+      rows.push({
+        difficulty,
+        mode,
+        fragments: buildPromptPool(difficulty, mode).length,
+      });
+    }
+  }
+
+  console.table(rows);
+}
+
+if (typeof window !== "undefined") {
+  (window as unknown as { logPromptPools: () => void }).logPromptPools =
+    logPromptPools;
 }
 
 function getRandomExamples(examples: string[]) {
@@ -549768,7 +549818,7 @@ export default function App() {
   useEffect(() => {
     if (
       gameOver ||
-      (gameMode !== "rush" && gameMode !== "alphabet") ||
+      (gameMode !== "rush" && gameMode !== "alphabet" && gameMode !== "sevenRush") ||
       rushStartTime === null
     ) {
       return;
@@ -549786,7 +549836,13 @@ export default function App() {
   }, [gameOver, gameMode, rushStartTime]);
 
   useEffect(() => {
-    if (!gameOver || !started || !isRankedMode(gameMode)) {
+    // zen is never ranked
+    if (
+      !gameOver ||
+      !started ||
+      gameMode === "zen" ||
+      !isRankedMode(gameMode)
+    ) {
       return;
     }
 
@@ -549794,7 +549850,10 @@ export default function App() {
 
     if (!runId) return;
 
-    const isRush = gameMode === "rush" || gameMode === "alphabet";
+    const isRush =
+      gameMode === "rush" ||
+      gameMode === "alphabet" ||
+      gameMode === "sevenRush";
 
     if (isRush && rushTotalTime === null) {
       return;
@@ -549870,7 +549929,7 @@ export default function App() {
       return next;
     });
 
-    const nextPrompt = pickPrompt(difficulty);
+    const nextPrompt = pickPrompt(difficulty, gameMode);
 
     setPrompt(nextPrompt.fragment);
     setPromptExamples(nextPrompt.examples);
@@ -549886,7 +549945,10 @@ export default function App() {
     if (gameOver) return;
 
     const word = input.trim().toLowerCase();
-    const minLength = prompt.length + 1;
+    const minLength =
+      gameMode === "sevenRush"
+        ? Math.max(prompt.length + 1, 6)
+        : prompt.length + 1;
 
     if (word.length < minLength) {
       setMessage(`your word must be at least ${minLength} letters.`);
@@ -549935,7 +549997,7 @@ export default function App() {
 
     setInput("");
 
-    if (gameMode === "rush") {
+    if (gameMode === "rush" || gameMode === "sevenRush") {
       const nextRushWords = rushWords + 1;
 
       setRushWords(nextRushWords);
@@ -549944,7 +550006,11 @@ export default function App() {
         const totalTime = (Date.now() - (rushStartTime ?? Date.now())) / 1000;
 
         setRushTotalTime(totalTime);
-        setMessage("rush complete!");
+        setMessage(
+          gameMode === "sevenRush"
+            ? "sixrush complete!"
+            : "rush complete!",
+        );
         setGameOver(true);
         return;
       }
@@ -549962,7 +550028,7 @@ export default function App() {
       }
     }
 
-    const nextPrompt = pickPrompt(difficulty);
+    const nextPrompt = pickPrompt(difficulty, gameMode);
 
     setPrompt(nextPrompt.fragment);
     setPromptExamples(nextPrompt.examples);
@@ -550013,10 +550079,9 @@ export default function App() {
     setPendingRun(null);
     setHighlightRanks({ alltime: null, weekly: null });
 
-    const startingLives =
-      difficulty === "superEasy" ? 5 : difficulty === "easy" ? 4 : 3;
+    const startingLives = difficulty === "superEasy" ? 5 : 3;
 
-    const nextPrompt = pickPrompt(difficulty);
+    const nextPrompt = pickPrompt(difficulty, gameMode);
     const now = Date.now();
 
     setPrompt(nextPrompt.fragment);
@@ -550044,7 +550109,11 @@ export default function App() {
 
     roundStartedAt.current = now;
 
-    if (gameMode === "rush" || gameMode === "alphabet") {
+    if (
+      gameMode === "rush" ||
+      gameMode === "alphabet" ||
+      gameMode === "sevenRush"
+    ) {
       setRushStartTime(now);
     } else {
       setRushStartTime(null);
@@ -550124,7 +550193,10 @@ export default function App() {
     <div className="setting">
       <small>difficulty</small>
 
-      <div className="option-grid">
+      <div
+        className="option-grid"
+        style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)" }}
+      >
         {DIFFICULTY_OPTIONS.map((option) => (
           <button
             type="button"
@@ -550146,11 +550218,15 @@ export default function App() {
     <div className="setting">
       <small>mode</small>
 
-      <div className="option-grid mode-options">
-        {MODE_OPTIONS.map((option) => (
+      <div
+        className="option-grid mode-options"
+        style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)" }}
+      >
+        {MODE_OPTIONS.map((option, index) => (
           <button
             type="button"
             key={option.value}
+            style={{ gridColumn: index < 2 ? "span 3" : "span 2" }}
             className={gameMode === option.value ? "option selected" : "option"}
             onClick={() => setGameMode(option.value)}
           >
@@ -550192,7 +550268,7 @@ export default function App() {
     <main>
       <header>
         <div className="game-title" onClick={goToStart}>
-          <b>WORD TIMER</b>
+          <b>WORDTIMER</b>
           <span> BETA</span>
         </div>
 
@@ -550212,7 +550288,7 @@ export default function App() {
                 <span className="lives">{hearts || "—"}</span>
               )}
 
-              {(gameMode === "rush" || gameMode === "alphabet") && (
+              {(isRushMode(gameMode)) && (
                 <span className="timer2">{rushElapsed.toFixed(1)}s</span>
               )}
             </>
@@ -550264,6 +550340,15 @@ export default function App() {
             </div>
 
             <div className="rules-section">
+              <strong>sixrush</strong>
+
+              <p>
+                complete 10 words as quickly as possible, but every word must
+                be at least 6 letters long. your final time is your score.
+              </p>
+            </div>
+
+            <div className="rules-section">
               <strong>alphabet</strong>
 
               <p>keep filling in words until you get all 26 letters</p>
@@ -550272,7 +550357,10 @@ export default function App() {
             <div className="rules-section">
               <strong>zen</strong>
 
-              <p>play without a timer or lives. finish whenever you want.</p>
+              <p>
+                play without a timer or lives. finish whenever you want. zen
+                runs are not ranked.
+              </p>
             </div>
 
             <div className="rules-section">
@@ -550308,7 +550396,10 @@ export default function App() {
 
             <h2>view leaderboard</h2>
 
-            <div className="option-grid">
+            <div
+              className="option-grid"
+              style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)" }}
+            >
               <button
                 type="button"
                 className={
@@ -550331,13 +550422,20 @@ export default function App() {
               </button>
             </div>
 
-            <Leaderboard
-              mode={gameMode}
-              difficulty={difficulty}
-              roundTime={gameMode === "timed" ? roundTime : null}
-              period={boardPeriod}
-              refreshKey={boardRefresh}
-            />
+            {gameMode === "zen" ? (
+              <p>
+                zen mode isn't ranked. pick another mode to view its
+                leaderboard.
+              </p>
+            ) : (
+              <Leaderboard
+                mode={gameMode}
+                difficulty={difficulty}
+                roundTime={gameMode === "timed" ? roundTime : null}
+                period={boardPeriod}
+                refreshKey={boardRefresh}
+              />
+            )}
           </div>
         </div>
       )}
@@ -550348,7 +550446,7 @@ export default function App() {
             <div className="results-header">
               <small>how to play</small>
 
-              <h2>word timer</h2>
+              <h2>wordtimer</h2>
 
               <p>find words containing the letters shown on screen.</p>
             </div>
@@ -550399,20 +550497,21 @@ export default function App() {
             <div className="results-header">
               <small>
                 {gameMode === "zen" ||
-                gameMode === "rush" ||
-                gameMode === "alphabet"
+                  gameMode === "rush" ||
+                  gameMode === "alphabet" ||
+                  gameMode === "sevenRush"
                   ? "run complete"
                   : "game over"}
               </small>
 
               <h2>
-                {gameMode === "rush" || gameMode === "alphabet"
+                {isRushMode(gameMode)
                   ? rushTotalTime?.toFixed(2)
                   : score}
               </h2>
 
               <p>
-                {gameMode === "rush" || gameMode === "alphabet"
+                {isRushMode(gameMode)
                   ? "seconds"
                   : "words this run"}
               </p>
@@ -550465,7 +550564,7 @@ export default function App() {
 
             <div className="divider" />
 
-            {isRankedMode(gameMode) ? (
+            {gameMode !== "zen" && isRankedMode(gameMode) && (
               <>
                 <Leaderboard
                   mode={gameMode}
@@ -550473,7 +550572,7 @@ export default function App() {
                   roundTime={gameMode === "timed" ? roundTime : null}
                   period="weekly"
                   refreshKey={boardRefresh}
-                  highlightRank={highlightRanks.alltime}
+                  highlightRank={highlightRanks.weekly}
                 />
 
                 <div className="divider" />
@@ -550484,14 +550583,12 @@ export default function App() {
                   roundTime={gameMode === "timed" ? roundTime : null}
                   period="alltime"
                   refreshKey={boardRefresh}
-                  highlightRank={highlightRanks.weekly}
+                  highlightRank={highlightRanks.alltime}
                 />
-              </>
-            ) : (
-              <Leaderboard mode={gameMode} difficulty={difficulty} />
-            )}
 
-            <div className="divider" />
+                <div className="divider" />
+              </>
+            )}
 
             <div className="new-game-settings">
               <div className="settings-title">
@@ -550509,11 +550606,13 @@ export default function App() {
               <button type="button" className="play-again" onClick={reset}>
                 {gameMode === "rush"
                   ? "run again (space)"
-                  : gameMode === "alphabet"
-                    ? "start alphabet"
-                    : gameMode === "zen"
-                      ? "start zen game"
-                      : "play again"}
+                  : gameMode === "sevenRush"
+                    ? "run sixrush again (space)"
+                    : gameMode === "alphabet"
+                      ? "start alphabet"
+                      : gameMode === "zen"
+                        ? "start zen game"
+                        : "play again"}
               </button>
             </div>
           </div>
@@ -550524,11 +550623,13 @@ export default function App() {
                 <small>
                   {gameMode === "rush"
                     ? "RUSH"
-                    : gameMode === "alphabet"
-                      ? "ALPHABET"
-                      : gameMode === "zen"
-                        ? "ZEN MODE"
-                        : "TIME LEFT"}
+                    : gameMode === "sevenRush"
+                      ? "SIXRUSH"
+                      : gameMode === "alphabet"
+                        ? "ALPHABET"
+                        : gameMode === "zen"
+                          ? "ZEN MODE"
+                          : "TIME LEFT"}
                 </small>
 
                 {gameMode === "timed" && (
@@ -550539,7 +550640,7 @@ export default function App() {
 
                 {gameMode === "zen" && <div className="timer">∞</div>}
 
-                {gameMode === "rush" && (
+                {(gameMode === "rush" || gameMode === "sevenRush") && (
                   <div className="timer">{rushWords}/10</div>
                 )}
 
