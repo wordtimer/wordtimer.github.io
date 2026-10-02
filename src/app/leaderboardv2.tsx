@@ -69,7 +69,26 @@ export async function wouldQualify(
     p_period: period,
   });
 }
+export type ScorePercentile = {
+  percentile: number;
+  total_scores: number;
+};
 
+export async function getScorePercentile(
+  mode: RankedMode,
+  difficulty: string,
+  roundTime: number | null,
+  score: number,
+) {
+  const rows = await rpc<ScorePercentile[]>("get_score_percentile", {
+    p_mode: mode,
+    p_difficulty: difficulty,
+    p_round_time: mode === "timed" ? roundTime : null,
+    p_score: score,
+  });
+
+  return rows[0] ?? null;
+}
 export async function fetchLeaderboard(
   mode: RankedMode,
   difficulty: string,
@@ -206,7 +225,10 @@ export function Leaderboard({
             const isYou = highlightRank === rank;
 
             return (
-              <li className={isYou ? "lb-row lb-you" : "lb-row"} key={`${entry.name}-${entry.createdAt}-${index}`}>
+              <li
+                className={isYou ? "lb-row lb-you" : "lb-row"}
+                key={`${entry.name}-${entry.createdAt}-${index}`}
+              >
                 <span className="lb-rank">{rank}.</span>
                 <span
                   className="lb-dot"
@@ -214,7 +236,9 @@ export function Leaderboard({
                   aria-hidden="true"
                 />
                 <span className="lb-name">{entry.name}</span>
-                <span className="lb-score">{formatScore(mode, entry.score)}</span>
+                <span className="lb-score">
+                  {formatScore(mode, entry.score)}
+                </span>
               </li>
             );
           })}
@@ -245,7 +269,7 @@ export function LeaderboardSubmitModal({
   onSubmit,
   onClose,
 }: LeaderboardSubmitModalProps) {
-  const [name, setName] = useState("wordtimer");
+  const [name, setName] = useState("");
   const [color, setColor] = useState("#4f8cff");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -310,7 +334,9 @@ export function LeaderboardSubmitModal({
           <input
             id="leaderboard-name"
             value={name}
-            onChange={(event) => setName(event.target.value.slice(0, MAX_NAME_LENGTH))}
+            onChange={(event) =>
+              setName(event.target.value.slice(0, MAX_NAME_LENGTH))
+            }
             maxLength={MAX_NAME_LENGTH}
             placeholder="your name"
             autoFocus

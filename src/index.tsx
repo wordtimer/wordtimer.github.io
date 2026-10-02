@@ -4,6 +4,7 @@ import {
   LeaderboardSubmitModal,
   Period,
   getRunRank,
+  getScorePercentile,
   isRankedMode,
   submitScore,
   wouldQualify,
@@ -549538,7 +549539,7 @@ async function loadGamesPlayed(
 
     const data = await response.json();
     setGamesPlayed(Number(data.value) || 0);
-  } catch { }
+  } catch {}
 }
 
 async function countGamePlayed(
@@ -549551,7 +549552,7 @@ async function countGamePlayed(
 
     const data = await response.json();
     setGamesPlayed(Number(data.value) || 0);
-  } catch { }
+  } catch {}
 }
 
 type Difficulty = "superEasy" | "hard";
@@ -549654,10 +549655,7 @@ function buildPromptPool(difficulty: Difficulty, mode?: GameMode) {
       if (data.count < minimum) return false;
 
       if (sevenRush) {
-        return (
-          data.longCount >= longMinimum &&
-          data.longExamples.length > 0
-        );
+        return data.longCount >= longMinimum && data.longExamples.length > 0;
       }
 
       return true;
@@ -549727,7 +549725,9 @@ function getRandomExamples(examples: string[]) {
 
 export default function App() {
   const [difficulty, setDifficulty] = useState<Difficulty>("superEasy");
-
+  const [percentile, setPercentile] = useState<number | null>(null);
+  const [percentileTotal, setPercentileTotal] = useState(0);
+  const [percentileLoading, setPercentileLoading] = useState(false);
   const runIdRef = useRef<string | null>(null);
 
   const [pendingRun, setPendingRun] = useState<{
@@ -549818,7 +549818,9 @@ export default function App() {
   useEffect(() => {
     if (
       gameOver ||
-      (gameMode !== "rush" && gameMode !== "alphabet" && gameMode !== "sevenRush") ||
+      (gameMode !== "rush" &&
+        gameMode !== "alphabet" &&
+        gameMode !== "sevenRush") ||
       rushStartTime === null
     ) {
       return;
@@ -549834,65 +549836,6 @@ export default function App() {
 
     return () => window.clearInterval(id);
   }, [gameOver, gameMode, rushStartTime]);
-
-  useEffect(() => {
-    // zen is never ranked
-    if (
-      !gameOver ||
-      !started ||
-      gameMode === "zen" ||
-      !isRankedMode(gameMode)
-    ) {
-      return;
-    }
-
-    const runId = runIdRef.current;
-
-    if (!runId) return;
-
-    const isRush =
-      gameMode === "rush" ||
-      gameMode === "alphabet" ||
-      gameMode === "sevenRush";
-
-    if (isRush && rushTotalTime === null) {
-      return;
-    }
-
-    runIdRef.current = null;
-
-    const finalScore = isRush ? Math.round((rushTotalTime ?? 0) * 1000) : score;
-    const roundTimeArg = gameMode === "timed" ? roundTime : null;
-
-    Promise.all([
-      wouldQualify(gameMode, difficulty, roundTimeArg, finalScore, "alltime"),
-      wouldQualify(gameMode, difficulty, roundTimeArg, finalScore, "weekly"),
-    ])
-      .then(([allTime, weekly]) => {
-        if (!allTime && !weekly) return;
-
-        setPendingRun({
-          runId,
-          mode: gameMode,
-          difficulty,
-          roundTime: roundTimeArg,
-          score: finalScore,
-          allTime,
-          weekly,
-        });
-      })
-      .catch((error) => {
-        console.error("LEADERBOARD QUALIFY ERROR:", error);
-      });
-  }, [
-    gameOver,
-    started,
-    gameMode,
-    difficulty,
-    roundTime,
-    score,
-    rushTotalTime,
-  ]);
 
   useEffect(() => {
     if (gameOver || gameMode !== "timed" || time !== 0) {
@@ -550007,9 +549950,7 @@ export default function App() {
 
         setRushTotalTime(totalTime);
         setMessage(
-          gameMode === "sevenRush"
-            ? "sixrush complete!"
-            : "rush complete!",
+          gameMode === "sevenRush" ? "sixrush complete!" : "rush complete!",
         );
         setGameOver(true);
         return;
@@ -550152,7 +550093,135 @@ export default function App() {
   const reset = () => {
     startGame();
   };
+  useEffect(() => {
+    if (
+      !gameOver ||
+      !started ||
+      gameMode === "zen" ||
+      !isRankedMode(gameMode)
+    ) {
+      return;
+    }
 
+    const runId = runIdRef.current;
+    if (!runId) return;
+
+    const isRush =
+      gameMode === "rush" ||
+      gameMode === "alphabet" ||
+      gameMode === "sevenRush";
+
+    if (isRush && rushTotalTime === null) {
+      return;
+    }
+
+    runIdRef.current = null;
+
+    const finalScore = isRush ? Math.round((rushTotalTime ?? 0) * 1000) : score;
+
+    const roundTimeArg = gameMode === "timed" ? roundTime : null;
+
+    Promise.all([
+      wouldQualify(gameMode, difficulty, roundTimeArg, finalScore, "alltime"),
+      wouldQualify(gameMode, difficulty, roundTimeArg, finalScore, "weekly"),
+    ])
+      .then(async ([allTime, weekly]) => {
+        if (allTime || weekly) {
+          setPendingRun({
+            runId,
+            mode: gameMode,
+            difficulty,
+            roundTime: roundTimeArg,
+            score: finalScore,
+            allTime,
+            weekly,
+          });
+
+          return;
+        }
+
+        await submitScore(
+          runId,
+          gameMode,
+          difficulty,
+          roundTimeArg,
+          finalScore,
+          "anonymous",
+          "#4f8cff",
+        );
+
+        console.log("NON-QUALIFYING SCORE SAVED:", finalScore);
+      })
+      .catch((error) => {
+        console.error("LEADERBOARD QUALIFY ERROR:", error);
+      });
+  }, [
+    gameOver,
+    started,
+    gameMode,
+    difficulty,
+    roundTime,
+    score,
+    rushTotalTime,
+  ]);
+  useEffect(() => {
+    if (
+      !gameOver ||
+      !started ||
+      gameMode === "zen" ||
+      !isRankedMode(gameMode)
+    ) {
+      return;
+    }
+
+    const finalScore =
+      gameMode === "rush" || gameMode === "alphabet" || gameMode === "sevenRush"
+        ? Math.round((rushTotalTime ?? 0) * 1000)
+        : score;
+
+    if (
+      (gameMode === "rush" ||
+        gameMode === "alphabet" ||
+        gameMode === "sevenRush") &&
+      rushTotalTime === null
+    ) {
+      return;
+    }
+
+    const roundTimeArg = gameMode === "timed" ? roundTime : null;
+
+    setPercentileLoading(true);
+    setPercentile(null);
+    setPercentileTotal(0);
+
+    getScorePercentile(gameMode, difficulty, roundTimeArg, finalScore)
+      .then((result) => {
+        if (!result) {
+          setPercentile(null);
+          setPercentileTotal(0);
+          return;
+        }
+
+        setPercentile(result.percentile);
+        setPercentileTotal(result.total_scores);
+      })
+      .catch((error) => {
+        console.error("PERCENTILE ERROR:", error);
+        setPercentile(null);
+        setPercentileTotal(0);
+      })
+      .finally(() => {
+        setPercentileLoading(false);
+      });
+  }, [
+    gameOver,
+    started,
+    gameMode,
+    difficulty,
+    roundTime,
+    score,
+    rushTotalTime,
+  ]);
   useEffect(() => {
     const handleSpacebar = (event: KeyboardEvent) => {
       if (event.code !== "Space" || event.repeat) return;
@@ -550288,7 +550357,7 @@ export default function App() {
                 <span className="lives">{hearts || "—"}</span>
               )}
 
-              {(isRushMode(gameMode)) && (
+              {isRushMode(gameMode) && (
                 <span className="timer2">{rushElapsed.toFixed(1)}s</span>
               )}
             </>
@@ -550343,8 +550412,8 @@ export default function App() {
               <strong>sixrush</strong>
 
               <p>
-                complete 10 words as quickly as possible, but every word must
-                be at least 6 letters long. your final time is your score.
+                complete 10 words as quickly as possible, but every word must be
+                at least 6 letters long. your final time is your score.
               </p>
             </div>
 
@@ -550497,27 +550566,41 @@ export default function App() {
             <div className="results-header">
               <small>
                 {gameMode === "zen" ||
-                  gameMode === "rush" ||
-                  gameMode === "alphabet" ||
-                  gameMode === "sevenRush"
+                gameMode === "rush" ||
+                gameMode === "alphabet" ||
+                gameMode === "sevenRush"
                   ? "run complete"
                   : "game over"}
               </small>
 
               <h2>
-                {isRushMode(gameMode)
-                  ? rushTotalTime?.toFixed(2)
-                  : score}
+                {isRushMode(gameMode) ? rushTotalTime?.toFixed(2) : score}
               </h2>
 
-              <p>
-                {isRushMode(gameMode)
-                  ? "seconds"
-                  : "words this run"}
-              </p>
+              <p>{isRushMode(gameMode) ? "seconds" : "words this run"}</p>
             </div>
 
             <div className="final-stats">
+              {gameMode !== "zen" && isRankedMode(gameMode) && (
+                <div className="percentile-box">
+                  <small>your performance</small>
+
+                  {percentileLoading ? (
+                    <strong>calculating...</strong>
+                  ) : percentile !== null && percentileTotal > 0 ? (
+                    <>
+                      <strong>better than {percentile}% of runs</strong>
+                      <span>
+                        Compared with {percentileTotal.toLocaleString()} scores
+                      </span>
+                    </>
+                  ) : (
+                    <span>
+                      Not enough scores to calculate a percentile yet.
+                    </span>
+                  )}
+                </div>
+              )}
               <div className="stat-box">
                 <small>average time</small>
 
@@ -550648,6 +550731,16 @@ export default function App() {
                   <div className="timer">{letters.size}/26</div>
                 )}
               </div>
+
+              <button
+                type="button"
+                className="restart-button"
+                onClick={reset}
+                aria-label="redo"
+                title="Restart game"
+              >
+                ⟳
+              </button>
             </div>
 
             <div className="prompt">

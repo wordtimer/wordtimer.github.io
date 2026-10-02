@@ -785,3 +785,134 @@ label {
 .lb-skip:hover {
   color: #eee;
 }
+.top {
+  position: relative;
+  justify-content: center;
+  align-items: center;
+  min-height: 70px;
+  text-align: center;
+}
+
+.restart-button {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 1px solid #444;
+  background: #151515;
+  color: #35b8a6;
+  font-size: 25px;
+  cursor: pointer;
+}
+
+.restart-button:hover {
+  border-color: #35b8a6;
+  background: #173b37;
+}
+
+@media (max-width: 768px) {
+  main {
+    width: 100%;
+    max-width: 100%;
+    margin: 12px auto;
+    padding: 0 10px;
+  }
+
+  .card {
+    padding: 18px 14px;
+  }
+
+  header {
+    gap: 8px;
+    align-items: center;
+  }
+
+  .stats {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px 10px;
+    font-size: 12px;
+  }
+
+  .prompt {
+    margin: 25px 0;
+    padding: 22px 0;
+  }
+
+  .prompt strong {
+    font-size: clamp(34px, 10vw, 48px);
+    letter-spacing: 3px;
+  }
+
+  .entry {
+    gap: 6px;
+  }
+
+  .entry button {
+    padding: 0 14px;
+  }
+
+  .final-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .stat-box {
+    padding: 12px 5px;
+  }
+
+  .stat-box strong {
+    font-size: 16px;
+  }
+
+  .option-grid,
+  .mode-options {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 420px) {
+  .final-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .results-header h2 {
+    font-size: 40px;
+  }
+
+  .missed-item {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+}
+.percentile-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 25px;
+  padding: 18px 12px;
+  background: #151515;
+  border: 1px solid #333;
+  text-align: center;
+}
+
+.percentile-box small {
+  color: #999;
+  font-size: 11px;
+}
+
+.percentile-box strong {
+  color: #35b8a6;
+  font-size: 20px;
+}
+
+.percentile-box span {
+  color: #888;
+  font-size: 12px;
+}
