@@ -550556,7 +550556,7 @@ export default function App() {
 
             <div className="rules-section">
               <strong>created by</strong>
-              <p>Bryce</p>
+              <p>Bryce Wan</p>
             </div>
 
             <div className="rules-section">
@@ -550567,7 +550567,9 @@ export default function App() {
             <div className="rules-section">
               <strong>playtesters</strong>
               <p>
-                Pritvi Aiyar, Jiya Saraiya, Parthiv Mudragada, Allison Hadcock
+                Shiven Venigalla, Pritvi Aiyar, Jiya Saraiya, Parthiv Mudragada,
+                Allison Hadcock, Kyle Bellinder, David Moore, Mr. Grattoni,
+                Siddharth Kadiyala
               </p>
             </div>
           </div>
