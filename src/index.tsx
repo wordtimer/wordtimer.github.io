@@ -10,8 +10,8 @@ import {
   wouldQualify,
   type RankedMode,
 } from "../src/app/leaderboardv2";
+import GroupGame, { type GroupDifficulty, type PromptItem } from "./GroupGame";
 import "./styles.css";
-
 const DICTIONARY = new Set(
   `
 a
@@ -549519,9 +549519,30 @@ zwitterionic
     .map((word) => word.toLowerCase()),
 );
 
+// KEEP your existing import lines at the very top of your file (react hooks,
+// DICTIONARY, Leaderboard, submitScore, etc.) and add this one:
+
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
 const DEFAULT_TIME = 10;
+const MODERN_WORDS = new Set([
+  "rizz",
+  "mog",
+  "gyatt",
+  "sigma",
+  "skibidi",
+  "bussin",
+  "sus",
+  "aura",
+  "delulu",
+  "cap",
+  "based",
+  "goated",
+  "cringe",
+  "slay",
+  "mid",
+  "vibe",
+]);
 
 const COUNTER_URL =
   "https://countapi.mileshilliard.com/api/v1/hit/word_bomb_solo_games_7f3c9";
@@ -549539,7 +549560,7 @@ async function loadGamesPlayed(
 
     const data = await response.json();
     setGamesPlayed(Number(data.value) || 0);
-  } catch { }
+  } catch {}
 }
 
 async function countGamePlayed(
@@ -549552,7 +549573,7 @@ async function countGamePlayed(
 
     const data = await response.json();
     setGamesPlayed(Number(data.value) || 0);
-  } catch { }
+  } catch {}
 }
 
 type Difficulty = "superEasy" | "hard";
@@ -549560,13 +549581,17 @@ type GameMode = "timed" | "zen" | "rush" | "alphabet" | "sevenRush";
 
 const DIFFICULTY_LIMITS: Record<Difficulty, number> = {
   superEasy: 5000,
-  hard: 200,
+  hard: 300,
 };
+
+function getHardMinimum() {
+  return Math.floor(Math.random() * (900 - 300 + 1)) + 300;
+}
 
 const DIFFICULTY_OPTIONS: { value: Difficulty; label: string; hint: string }[] =
   [
     { value: "superEasy", label: "easy", hint: "5,000+ words" },
-    { value: "hard", label: "hard", hint: "200+ words" },
+    { value: "hard", label: "hard", hint: "300–900+ words" },
   ];
 
 const MODE_OPTIONS: { value: GameMode; label: string; hint: string }[] = [
@@ -549603,7 +549628,7 @@ function addExample(list: string[], word: string) {
 function buildPromptData() {
   const data = new Map<string, PromptData>();
 
-  for (const word of DICTIONARY) {
+  for (const word of new Set([...DICTIONARY, ...MODERN_WORDS])) {
     if (word.length < 2) continue;
 
     const isLong = word.length >= 6;
@@ -549645,8 +549670,12 @@ function buildPromptData() {
 
 const PROMPT_DATA = buildPromptData();
 
-function buildPromptPool(difficulty: Difficulty, mode?: GameMode) {
-  const minimum = DIFFICULTY_LIMITS[difficulty];
+function buildPromptPool(
+  difficulty: Difficulty,
+  mode?: GameMode,
+  minimumOverride?: number,
+) {
+  const minimum = minimumOverride ?? DIFFICULTY_LIMITS[difficulty];
   const sevenRush = mode === "sevenRush";
   const longMinimum = Math.ceil(minimum * SEVEN_RUSH_LONG_RATIO);
 
@@ -549668,7 +549697,9 @@ function buildPromptPool(difficulty: Difficulty, mode?: GameMode) {
 }
 
 function pickPrompt(difficulty: Difficulty, mode?: GameMode) {
-  const pool = buildPromptPool(difficulty, mode);
+  const minimum =
+    difficulty === "hard" ? getHardMinimum() : DIFFICULTY_LIMITS[difficulty];
+  const pool = buildPromptPool(difficulty, mode, minimum);
 
   if (!pool.length) {
     return {
@@ -549688,6 +549719,26 @@ function pickPrompt(difficulty: Difficulty, mode?: GameMode) {
   }
 
   return weightedPool[Math.floor(Math.random() * weightedPool.length)];
+}
+
+function makeGroupPrompts(count: number, difficulty: GroupDifficulty) {
+  const seen = new Set<string>();
+  const out: PromptItem[] = [];
+  let guard = 0;
+
+  while (out.length < count && guard++ < count * 20) {
+    const p = pickPrompt(difficulty);
+    if (seen.has(p.fragment)) continue;
+    seen.add(p.fragment);
+    out.push({ fragment: p.fragment, examples: p.examples });
+  }
+
+  while (out.length < count) {
+    const p = pickPrompt(difficulty);
+    out.push({ fragment: p.fragment, examples: p.examples });
+  }
+
+  return out;
 }
 
 // paste in the browser console via window.logPromptPools() to see pool sizes
@@ -549724,12 +549775,12 @@ function getRandomExamples(examples: string[]) {
 }
 
 export default function App() {
+  const [screen, setScreen] = useState<"solo" | "group">("solo");
   const [difficulty, setDifficulty] = useState<Difficulty>("superEasy");
   const [percentile, setPercentile] = useState<number | null>(null);
   const [percentileTotal, setPercentileTotal] = useState(0);
   const [percentileLoading, setPercentileLoading] = useState(false);
   const runIdRef = useRef<string | null>(null);
-
   const [pendingRun, setPendingRun] = useState<{
     runId: string;
     mode: RankedMode;
@@ -549752,6 +549803,7 @@ export default function App() {
   const [roundTime, setRoundTime] = useState<number>(10);
 
   const [gameMode, setGameMode] = useState<GameMode>("rush");
+  const wordInputRef = useRef<HTMLInputElement | null>(null);
 
   const initialPrompt = pickPrompt("superEasy");
 
@@ -549805,16 +549857,6 @@ export default function App() {
   useEffect(() => {
     loadGamesPlayed(setGamesPlayed);
   }, []);
-
-  useEffect(() => {
-    if (gameOver || gameMode !== "timed") return;
-
-    const id = window.setInterval(() => {
-      setTime((current) => Math.max(0, current - 1));
-    }, 1000);
-
-    return () => window.clearInterval(id);
-  }, [gameOver, gameMode]);
 
   useEffect(() => {
     if (
@@ -549904,7 +549946,7 @@ export default function App() {
       return;
     }
 
-    if (!DICTIONARY.has(word)) {
+    if (!DICTIONARY.has(word) && !MODERN_WORDS.has(word)) {
       setMessage("that word isn't in the dictionary.");
       return;
     }
@@ -550013,6 +550055,10 @@ export default function App() {
     setGameOver(true);
   };
 
+  const focusWordInput = () => {
+    window.setTimeout(() => wordInputRef.current?.focus(), 0);
+  };
+
   const startGame = () => {
     countGamePlayed(setGamesPlayed);
 
@@ -550025,7 +550071,6 @@ export default function App() {
 
     const nextPrompt = pickPrompt(difficulty, gameMode);
     const now = Date.now();
-
     setPrompt(nextPrompt.fragment);
     setPromptExamples(nextPrompt.examples);
     setInput("");
@@ -550050,6 +550095,7 @@ export default function App() {
     setStarted(true);
 
     roundStartedAt.current = now;
+    focusWordInput();
 
     if (
       gameMode === "rush" ||
@@ -550093,7 +550139,9 @@ export default function App() {
 
   const reset = () => {
     startGame();
+    focusWordInput();
   };
+
   useEffect(() => {
     if (
       !gameOver ||
@@ -550165,6 +550213,7 @@ export default function App() {
     score,
     rushTotalTime,
   ]);
+
   useEffect(() => {
     if (
       !gameOver ||
@@ -550223,7 +550272,10 @@ export default function App() {
     score,
     rushTotalTime,
   ]);
+
   useEffect(() => {
+    if (screen !== "solo") return;
+
     const handleSpacebar = (event: KeyboardEvent) => {
       if (event.code !== "Space" || event.repeat) return;
 
@@ -550250,7 +550302,7 @@ export default function App() {
     return () => {
       window.removeEventListener("keydown", handleSpacebar);
     };
-  }, [started, gameOver, showRules, showLeaderboard, pendingRun]);
+  }, [started, gameOver, showRules, showLeaderboard, pendingRun, screen]);
 
   const hearts = useMemo(() => "♥".repeat(Math.max(0, lives)), [lives]);
 
@@ -550290,13 +550342,18 @@ export default function App() {
 
       <div
         className="option-grid mode-options"
-        style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)" }}
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(6, 1fr)",
+        }}
       >
         {MODE_OPTIONS.map((option, index) => (
           <button
             type="button"
             key={option.value}
-            style={{ gridColumn: index < 2 ? "span 3" : "span 2" }}
+            style={{
+              gridColumn: index < 2 ? "span 3" : "span 2",
+            }}
             className={gameMode === option.value ? "option selected" : "option"}
             onClick={() => setGameMode(option.value)}
           >
@@ -550305,6 +550362,15 @@ export default function App() {
           </button>
         ))}
       </div>
+
+      <button
+        type="button"
+        className="option group-mode-button"
+        onClick={() => setScreen("group")}
+      >
+        <strong>multiplayer</strong>
+        <span>race friends to 20 words</span>
+      </button>
     </div>
   );
 
@@ -550333,6 +550399,25 @@ export default function App() {
       </div>
     </div>
   );
+
+  if (screen === "group") {
+    return (
+      <main>
+        <header>
+          <div className="game-title" onClick={() => setScreen("solo")}>
+            <b>WORDTIMER</b>
+            <span> BETA</span>
+          </div>
+        </header>
+
+        <GroupGame
+          onExit={() => setScreen("solo")}
+          makePrompts={makeGroupPrompts}
+          isValidWord={(w) => DICTIONARY.has(w) || MODERN_WORDS.has(w)}
+        />
+      </main>
+    );
+  }
 
   return (
     <main>
@@ -550434,6 +550519,15 @@ export default function App() {
             </div>
 
             <div className="rules-section">
+              <strong>BETA multiplayer</strong>
+
+              <p>
+                create a game and share the code with friends. everyone gets the
+                same letters, and the first player to finish 20 words wins.
+              </p>
+            </div>
+
+            <div className="rules-section">
               <strong>weekly leaderboard</strong>
 
               <p>
@@ -550445,10 +550539,7 @@ export default function App() {
         </div>
       )}
       {showCredits && (
-        <div
-          className="rules-overlay"
-          onClick={() => setShowCredits(false)}
-        >
+        <div className="rules-overlay" onClick={() => setShowCredits(false)}>
           <div
             className="rules-modal"
             onClick={(event) => event.stopPropagation()}
@@ -550461,8 +550552,6 @@ export default function App() {
               ×
             </button>
 
-
-
             <h2>credits</h2>
 
             <div className="rules-section">
@@ -550472,14 +550561,14 @@ export default function App() {
 
             <div className="rules-section">
               <strong>lead playtesters</strong>
-              <p>
-                Alex Tybon, Mrs. Denna, Micah Park, Adam Feng, Mr. Hays
-              </p>
+              <p>Alex Tybon, Mrs. Denna, Micah Park, Adam Feng, Mr. Hays</p>
             </div>
 
             <div className="rules-section">
               <strong>playtesters</strong>
-              <p>Pritvi Aiyar, 	Jiya Saraiya,	Parthiv Mudragada, Allison Hadcock</p>
+              <p>
+                Pritvi Aiyar, Jiya Saraiya, Parthiv Mudragada, Allison Hadcock
+              </p>
             </div>
           </div>
         </div>
@@ -550613,9 +550702,9 @@ export default function App() {
             <div className="results-header">
               <small>
                 {gameMode === "zen" ||
-                  gameMode === "rush" ||
-                  gameMode === "alphabet" ||
-                  gameMode === "sevenRush"
+                gameMode === "rush" ||
+                gameMode === "alphabet" ||
+                gameMode === "sevenRush"
                   ? "run complete"
                   : "game over"}
               </small>
@@ -550805,7 +550894,13 @@ export default function App() {
                 <input
                   id="word"
                   value={input}
-                  onChange={(e) => setInput(e.target.value)}
+                  onChange={(e) =>
+                    setInput(
+                      e.target.value.replace(/[^a-zA-Z]/g, "").toLowerCase(),
+                    )
+                  }
+                  ref={wordInputRef}
+                  inputMode="text"
                   autoFocus
                   autoComplete="off"
                   placeholder="type a word..."

@@ -916,3 +916,324 @@ label {
   color: #888;
   font-size: 12px;
 }
+
+/* Group mode */
+.group-panel {
+  margin-bottom: 20px;
+  padding: 15px;
+  background: #151515;
+  border: 1px solid #333;
+}
+
+.group-input {
+  width: 100%;
+  height: 42px;
+  padding: 0 10px;
+  background: #111;
+  border: 1px solid #444;
+  color: #fff;
+  outline: none;
+  font-size: 15px;
+}
+
+.group-input:focus {
+  border-color: #35b8a6;
+}
+
+.group-players {
+  margin-top: 15px;
+}
+
+.group-player {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid #303030;
+  font-size: 13px;
+}
+
+.group-player strong {
+  color: #35b8a6;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+@media (max-width: 600px) {
+  body {
+    overflow-x: hidden;
+  }
+
+  main {
+    width: 100%;
+    max-width: none;
+    margin: 8px auto;
+    padding: 0 8px;
+  }
+
+  header {
+    flex-direction: column;
+    align-items: stretch;
+    margin-bottom: 10px;
+  }
+
+  .game-title {
+    text-align: center;
+  }
+
+  .stats {
+    justify-content: center;
+    text-align: center;
+    flex-wrap: wrap;
+    line-height: 1.4;
+  }
+
+  .card {
+    padding: 14px 10px;
+    overflow: hidden;
+  }
+
+  .mode-options,
+  .option-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .time-options {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .option {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .entry {
+    width: 100%;
+  }
+
+  .entry input {
+    width: 0;
+  }
+
+  .entry button {
+    flex: 0 0 72px;
+    padding: 0 8px;
+  }
+
+  .top {
+    min-height: 60px;
+  }
+
+  .restart-button {
+    width: 34px;
+    height: 34px;
+    font-size: 22px;
+  }
+
+  .rules-overlay {
+    padding: 8px;
+    align-items: flex-start;
+  }
+
+  .rules-modal {
+    max-height: calc(100vh - 16px);
+    padding: 22px 16px;
+    margin-top: 8px;
+  }
+
+  .leaderboard {
+    overflow: hidden;
+  }
+
+  .lb-row {
+    gap: 7px;
+    padding: 8px;
+  }
+
+  .lb-name {
+    overflow: hidden;
+  }
+
+  .lb-score {
+    font-size: 12px;
+  }
+
+  .alphabet {
+    grid-template-columns: repeat(7, 1fr);
+  }
+
+  .alphabet span {
+    height: 32px;
+  }
+
+  .final-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+/* paste into your main stylesheet */
+
+.mp-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.mp-menu,
+.mp-lobby,
+.mp-race,
+.mp-results {
+  display: grid;
+  gap: 12px;
+}
+
+.mp-code {
+  font-size: 2.4rem;
+  letter-spacing: 0em;
+  font-weight: 700;
+  text-align: center;
+}
+
+.mp-tag {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+
+.mp-countdown-screen {
+  text-align: center;
+  padding: 24px 0;
+}
+
+.mp-countdown {
+  font-size: 6rem;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.mp-board {
+  display: grid;
+  gap: 6px;
+}
+
+.mp-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mp-name {
+  flex: 0 0 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mp-me .mp-name {
+  font-weight: 700;
+}
+
+.mp-bar {
+  flex: 1;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(127, 127, 127, 0.25);
+  overflow: hidden;
+}
+
+.mp-bar > i {
+  display: block;
+  height: 100%;
+  background: #4f8cff;
+  transition: width 0.2s ease;
+}
+
+.mp-count {
+  width: 48px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+/* Multiplayer mode button */
+
+.group-mode-button {
+  width: 100%;
+  min-height: 55px;
+  text-align: center;
+  margin-top: 10px;
+}
+
+.group-mode-button strong {
+  font-size: 13px;
+}
+
+.group-mode-button span {
+  margin-top: 4px;
+}
+
+/* Multiplayer total games */
+
+.mp-stats {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-bottom: 18px;
+  color: #999;
+  font-size: 13px;
+  text-align: center;
+}
+
+.mp-stats strong {
+  color: #fff;
+  margin-left: 4px;
+}
+
+@media (max-width: 600px) {
+  .group-mode-button {
+    width: 100%;
+    margin-top: 10px;
+  }
+
+  .mp-stats {
+    font-size: 12px;
+  }
+}
+/* Tighten multiplayer layout */
+.mp-screen {
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+.mp-top {
+  margin-bottom: 6px;
+}
+
+.mp-menu,
+.mp-lobby,
+.mp-race,
+.mp-results {
+  gap: 8px;
+}
+
+.mp-screen h2,
+.mp-screen h3,
+.mp-screen p {
+  margin-top: 4px;
+  margin-bottom: 4px;
+}
+
+.mp-screen .group-panel {
+  margin-bottom: 8px;
+  padding: 10px;
+}
+
+.mp-screen .group-players {
+  margin-top: 8px;
+}
+
+.mp-screen .group-player {
+  padding: 6px 0;
+}
+
+.mp-screen .stats {
+  margin-bottom: 4px;
+}
