@@ -549539,7 +549539,7 @@ async function loadGamesPlayed(
 
     const data = await response.json();
     setGamesPlayed(Number(data.value) || 0);
-  } catch {}
+  } catch { }
 }
 
 async function countGamePlayed(
@@ -549552,7 +549552,7 @@ async function countGamePlayed(
 
     const data = await response.json();
     setGamesPlayed(Number(data.value) || 0);
-  } catch {}
+  } catch { }
 }
 
 type Difficulty = "superEasy" | "hard";
@@ -549767,6 +549767,7 @@ export default function App() {
   const [score, setScore] = useState(0);
   const [showLeaderboard, setShowLeaderboard] = useState(false);
 
+  const [showCredits, setShowCredits] = useState(false);
   const [rushWords, setRushWords] = useState(0);
   const [rushStartTime, setRushStartTime] = useState<number | null>(null);
 
@@ -550443,7 +550444,46 @@ export default function App() {
           </div>
         </div>
       )}
+      {showCredits && (
+        <div
+          className="rules-overlay"
+          onClick={() => setShowCredits(false)}
+        >
+          <div
+            className="rules-modal"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="rules-close"
+              onClick={() => setShowCredits(false)}
+            >
+              ×
+            </button>
 
+
+
+            <h2>credits</h2>
+
+            <div className="rules-section">
+              <strong>created by</strong>
+              <p>Bryce</p>
+            </div>
+
+            <div className="rules-section">
+              <strong>lead playtesters</strong>
+              <p>
+                Alex Tybon, Mrs. Denna, Micah Park, Adam Feng, Mr. Hays
+              </p>
+            </div>
+
+            <div className="rules-section">
+              <strong>playtesters</strong>
+              <p>Pritvi Aiyar, 	Jiya Saraiya,	Parthiv Mudragada, Allison Hadcock</p>
+            </div>
+          </div>
+        </div>
+      )}
       {showLeaderboard && (
         <div
           className="rules-overlay"
@@ -550559,6 +550599,13 @@ export default function App() {
               >
                 view leaderboard
               </button>
+              <button
+                type="button"
+                className="lb-skip"
+                onClick={() => setShowCredits(true)}
+              >
+                credits
+              </button>
             </div>
           </div>
         ) : gameOver ? (
@@ -550566,9 +550613,9 @@ export default function App() {
             <div className="results-header">
               <small>
                 {gameMode === "zen" ||
-                gameMode === "rush" ||
-                gameMode === "alphabet" ||
-                gameMode === "sevenRush"
+                  gameMode === "rush" ||
+                  gameMode === "alphabet" ||
+                  gameMode === "sevenRush"
                   ? "run complete"
                   : "game over"}
               </small>
