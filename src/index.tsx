@@ -549560,7 +549560,7 @@ async function loadGamesPlayed(
 
     const data = await response.json();
     setGamesPlayed(Number(data.value) || 0);
-  } catch { }
+  } catch {}
 }
 
 async function countGamePlayed(
@@ -549573,7 +549573,7 @@ async function countGamePlayed(
 
     const data = await response.json();
     setGamesPlayed(Number(data.value) || 0);
-  } catch { }
+  } catch {}
 }
 
 type Difficulty = "superEasy" | "hard";
@@ -550561,7 +550561,10 @@ export default function App() {
 
             <div className="rules-section">
               <strong>lead playtesters</strong>
-              <p>Alex Tybon, Mrs. Denna, Micah Park, Adam Feng, Mr. Hays, Sathvik Loka</p>
+              <p>
+                Alex Tybon, Mrs. Denna, Micah Park, Adam Feng, Mr. Hays, Sathvik
+                Loka
+              </p>
             </div>
 
             <div className="rules-section">
@@ -550569,8 +550572,8 @@ export default function App() {
               <p>
                 Shiven Venigalla, Pritvi Aiyar, Jiya Saraiya, Parthiv Mudragada,
                 Allison Hadcock, Kyle Bellinder, David Moore, Mr. Grattoni,
-                Siddharth Kadiyala, Chloe Kim, 	Himal Harilal, Aranab Piya, Aayush Bennur,
-                Amar Osman
+                Siddharth Kadiyala, Chloe Kim, Himal Harilal, Aranab Piya,
+                Aayush Bennur, Amar Osman, Rishab Burri
               </p>
             </div>
           </div>
@@ -550705,9 +550708,9 @@ export default function App() {
             <div className="results-header">
               <small>
                 {gameMode === "zen" ||
-                  gameMode === "rush" ||
-                  gameMode === "alphabet" ||
-                  gameMode === "sevenRush"
+                gameMode === "rush" ||
+                gameMode === "alphabet" ||
+                gameMode === "sevenRush"
                   ? "run complete"
                   : "game over"}
               </small>

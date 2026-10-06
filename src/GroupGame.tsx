@@ -1,60 +1,81 @@
 import type { FormEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+/* ==========================================================================
+ * CONFIG / CONSTANTS
+ * ========================================================================== */
+
+// Your Supabase project + public (publishable) key. Safe to ship in frontend
+// code ONLY because Row Level Security / function grants protect the data.
 const SUPABASE_URL = "https://frnjbjhigceptzwtmyax.supabase.co";
 const SUPABASE_KEY = "sb_publishable_mB2ZU7RWDpQdPA-mIh8tKw_oxs1_2_B";
 
+// REST endpoints for the two tables: one row per player, one row per room.
 const PLAYERS_URL = `${SUPABASE_URL}/rest/v1/group_players`;
 const GAMES_URL = `${SUPABASE_URL}/rest/v1/group_games`;
 
+// External counter for "total games played by all users".
 const COUNTER_URL =
-  "https://countapi.mileshilliard.com/api/v1/hit/word_bomb_solo_games_7f3c9";
-
+  "https://countapi.mileshilliard.com/api/v1/hit/word_bomb_solo_games_7f3c9"; // +1
 const COUNTER_GET_URL =
-  "https://countapi.mileshilliard.com/api/v1/get/word_bomb_solo_games_7f3c9";
+  "https://countapi.mileshilliard.com/api/v1/get/word_bomb_solo_games_7f3c9"; // read only
 
+// localStorage keys so a player keeps the same identity/name across reloads.
 const PLAYER_ID_KEY = "wordtimer_group_player_id";
 const NAME_KEY = "wordtimer_group_name";
 
-export const TARGET_WORDS = 20;
-const MIN_PLAYERS = 2;
-const MAX_PLAYERS = 8;
+export const TARGET_WORDS = 20; // words needed to finish the race
+const MIN_PLAYERS = 2; // host can't start with fewer
+const MAX_PLAYERS = 8; // room cap
 const MAX_NAME_LENGTH = 15;
-const POLL_MS = 1000;
-const COUNTDOWN_SECONDS = 3;
+const POLL_MS = 1000; // how often we re-read the room from Supabase
+const COUNTDOWN_SECONDS = 3; // "get ready" time before the race starts
+
+/* ==========================================================================
+ * TYPES
+ * ========================================================================== */
 
 export type GroupDifficulty = "superEasy" | "hard";
 
+// One prompt: the letters players must include, plus example words.
 export type PromptItem = {
   fragment: string;
   examples: string[];
 };
 
+// A row in group_players.
 type Player = {
   player_id: string;
   room_code: string;
   display_name: string;
   joined_at: string;
-  progress: number;
-  finished_at: string | null;
+  progress: number; // words completed (0..TARGET_WORDS)
+  finished_at: string | null; // set by the SQL function when they finish
 };
 
+// A row in group_games.
 type Game = {
   room_code: string;
   status: "waiting" | "playing";
   host_id: string;
-  prompts: PromptItem[] | null;
-  game_number: number;
+  prompts: PromptItem[] | null; // same list for every player
+  game_number: number; // increments each round
   finish_mode: "first" | "last";
-  started_at: string | null;
+  started_at: string | null; // official race start (after countdown)
 };
 
+// Props passed in by the parent app.
 type Props = {
   onExit: () => void;
   makePrompts: (count: number, difficulty: GroupDifficulty) => PromptItem[];
   isValidWord: (word: string) => boolean;
 };
 
+/* ==========================================================================
+ * API HELPERS
+ * ========================================================================== */
+
+// Error that remembers the HTTP status (used to detect 409 = duplicate).
 class ApiError extends Error {
   status: number;
 
@@ -64,11 +85,14 @@ class ApiError extends Error {
   }
 }
 
+// Headers Supabase needs on every request.
 const AUTH_HEADERS = {
   apikey: SUPABASE_KEY,
   Authorization: `Bearer ${SUPABASE_KEY}`,
 };
 
+// Generic fetch wrapper: adds headers, throws ApiError on failure, and
+// safely returns null for empty responses (DELETE / PATCH with minimal return).
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     ...init,
@@ -90,10 +114,12 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 const enc = encodeURIComponent;
 
+// Tells Supabase not to send the row back (faster, smaller).
 const MINIMAL = {
   Prefer: "return=minimal",
 };
 
+// Read the global games counter (no increment).
 async function loadGamesPlayed(
   setGamesPlayed: React.Dispatch<React.SetStateAction<number>>,
 ) {
@@ -105,9 +131,12 @@ async function loadGamesPlayed(
     const data = await response.json();
 
     setGamesPlayed(Number(data.value) || 0);
-  } catch {}
+  } catch {
+    // counter is cosmetic, ignore failures
+  }
 }
 
+// Increment the global games counter by 1.
 async function countGamePlayed(
   setGamesPlayed: React.Dispatch<React.SetStateAction<number>>,
 ) {
@@ -119,9 +148,12 @@ async function countGamePlayed(
     const data = await response.json();
 
     setGamesPlayed(Number(data.value) || 0);
-  } catch {}
+  } catch {
+    // counter is cosmetic, ignore failures
+  }
 }
 
+// Stable anonymous identity for this browser (no login needed).
 function getPlayerId() {
   let id = localStorage.getItem(PLAYER_ID_KEY);
 
@@ -133,6 +165,7 @@ function getPlayerId() {
   return id;
 }
 
+// 6-character room code. Skips look-alike characters (0/O, 1/I).
 function makeRoomCode() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -141,6 +174,7 @@ function makeRoomCode() {
     .join("");
 }
 
+// Load the room row (or null if it doesn't exist).
 async function fetchGame(room: string) {
   const rows = await request<Game[]>(
     `${GAMES_URL}?room_code=eq.${enc(
@@ -151,6 +185,7 @@ async function fetchGame(room: string) {
   return rows[0] ?? null;
 }
 
+// Load every player in the room, oldest joiner first.
 function fetchPlayers(room: string) {
   return request<Player[]>(
     `${PLAYERS_URL}?room_code=eq.${enc(
@@ -159,12 +194,14 @@ function fetchPlayers(room: string) {
   );
 }
 
+// Delete my player row (leaving / switching rooms).
 function removeMe() {
   return request<null>(`${PLAYERS_URL}?player_id=eq.${enc(getPlayerId())}`, {
     method: "DELETE",
   });
 }
 
+// Zero out everyone's progress + finish time (new round / back to lobby).
 function resetPlayers(room: string) {
   return request<null>(`${PLAYERS_URL}?room_code=eq.${enc(room)}`, {
     method: "PATCH",
@@ -176,6 +213,7 @@ function resetPlayers(room: string) {
   });
 }
 
+// Update the room row (status, host, prompts, etc.).
 function patchGame(room: string, body: Record<string, unknown>) {
   return request<null>(`${GAMES_URL}?room_code=eq.${enc(room)}`, {
     method: "PATCH",
@@ -187,6 +225,7 @@ function patchGame(room: string, body: Record<string, unknown>) {
   });
 }
 
+// Save my current word count so other players' scoreboards update.
 function saveProgress(progress: number) {
   return request<null>(`${PLAYERS_URL}?player_id=eq.${enc(getPlayerId())}`, {
     method: "PATCH",
@@ -197,17 +236,21 @@ function saveProgress(progress: number) {
   });
 }
 
+// Tell the database I finished. The SQL function finish_group_player sets
+// finished_at = now() on the SERVER, so nobody can fake their time.
+// (SQL for this function is in the Supabase SQL editor - see instructions.)
 function saveFinished() {
-  return request<null>(`${PLAYERS_URL}?player_id=eq.${enc(getPlayerId())}`, {
-    method: "PATCH",
-    headers: MINIMAL,
+  return request<null>(`${SUPABASE_URL}/rest/v1/rpc/finish_group_player`, {
+    method: "POST",
     body: JSON.stringify({
-      progress: TARGET_WORDS,
-      finished_at: new Date().toISOString(),
+      p_player_id: getPlayerId(),
+      p_target_words: TARGET_WORDS,
     }),
   });
 }
 
+// Leave a room. If I was host, hand host to the next player, or delete the
+// room if I was the last one.
 async function leaveRoom(room: string, hostId: string | undefined) {
   const me = getPlayerId();
 
@@ -228,35 +271,66 @@ async function leaveRoom(room: string, hostId: string | undefined) {
   }
 }
 
+/* ==========================================================================
+ * COMPONENT
+ * ========================================================================== */
+
 export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
+  // My permanent id for this browser.
   const me = useMemo(getPlayerId, []);
 
+  // ---- menu state ----
   const [name, setName] = useState(() => localStorage.getItem(NAME_KEY) ?? "");
-
   const [codeInput, setCodeInput] = useState("");
+
+  // ---- room state (synced from Supabase by polling) ----
   const [room, setRoom] = useState<string | null>(null);
   const [game, setGame] = useState<Game | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
-  const [error, setError] = useState("");
-  const [syncError, setSyncError] = useState("");
-  const [busy, setBusy] = useState(false);
 
+  // ---- UI feedback ----
+  const [error, setError] = useState(""); // action errors (create/join/start)
+  const [syncError, setSyncError] = useState(""); // polling errors
+  const [busy, setBusy] = useState(false); // disables buttons mid-request
+
+  // ---- host settings (only used by the host when starting) ----
   const [difficulty, setDifficulty] = useState<GroupDifficulty>("superEasy");
-
   const [finishMode, setFinishMode] = useState<"first" | "last">("first");
 
-  const [index, setIndex] = useState(0);
+  // ---- my local race state ----
+  const [index, setIndex] = useState(0); // which word I'm on (0-based)
   const [input, setInput] = useState("");
   const [message, setMessage] = useState("");
-  const [used, setUsed] = useState<Set<string>>(new Set());
-  const [countdown, setCountdown] = useState(0);
+  const [used, setUsed] = useState<Set<string>>(new Set()); // no repeat words
+  const [countdown, setCountdown] = useState(0); // seconds until start
+  const [raceTime, setRaceTime] = useState(0); // seconds since start
 
   const [gamesPlayed, setGamesPlayed] = useState(0);
 
+  // Last game_number I've reset my local state for (see effect below).
   const seenGameNumber = useRef(0);
+
+  // Queue of pending saves so they run in order (see queueSave).
+  const saveChain = useRef<Promise<unknown>>(Promise.resolve());
 
   const isHost = !!game && game.host_id === me;
 
+  /* ------------------------------------------------------------------------
+   * SAVE QUEUE
+   * Runs database saves one after another. Without this, fast typing could
+   * send "progress 19" and "progress 20" at the same time and have the older
+   * one arrive last, overwriting the newer.
+   * ---------------------------------------------------------------------- */
+  const queueSave = (fn: () => Promise<unknown>) => {
+    saveChain.current = saveChain.current
+      .catch(() => {}) // a previous failure must not block the queue
+      .then(fn)
+      .catch((e) => console.error("SAVE ERROR:", e));
+  };
+
+  /* ------------------------------------------------------------------------
+   * EFFECT: refresh the "total games played" number every 5 seconds.
+   * ---------------------------------------------------------------------- */
   useEffect(() => {
     loadGamesPlayed(setGamesPlayed);
 
@@ -267,10 +341,14 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     return () => window.clearInterval(id);
   }, []);
 
+  /* ------------------------------------------------------------------------
+   * EFFECT: poll the room + players once per second while in a room.
+   * This is how every computer learns about everyone else's progress.
+   * ---------------------------------------------------------------------- */
   useEffect(() => {
     if (!room) return;
 
-    let cancelled = false;
+    let cancelled = false; // stops stale responses after leaving
 
     const tick = async () => {
       try {
@@ -278,6 +356,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
 
         if (cancelled) return;
 
+        // Room row vanished (host left and deleted it).
         if (!g) {
           setRoom(null);
           setGame(null);
@@ -298,7 +377,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
       }
     };
 
-    tick();
+    tick(); // immediately, then every POLL_MS
 
     const id = window.setInterval(tick, POLL_MS);
 
@@ -308,6 +387,10 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     };
   }, [room]);
 
+  /* ------------------------------------------------------------------------
+   * EFFECT: if the tab is closed, remove my player row so I don't linger
+   * as a ghost player. keepalive lets the request finish while unloading.
+   * ---------------------------------------------------------------------- */
   useEffect(() => {
     if (!room) return;
 
@@ -324,35 +407,102 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     return () => window.removeEventListener("pagehide", onHide);
   }, [room, me]);
 
+  /* ------------------------------------------------------------------------
+   * EFFECT: reset MY local race state whenever a new round begins.
+   * Without this, "index" stays at 20 after the first game and the second
+   * game would instantly show "you finished".
+   * ---------------------------------------------------------------------- */
   useEffect(() => {
-    if (!game || game.status !== "playing") return;
+    if (!game) return;
 
-    if (seenGameNumber.current === game.game_number) {
+    if (game.game_number !== seenGameNumber.current) {
+      seenGameNumber.current = game.game_number;
+
+      setIndex(0);
+      setInput("");
+      setMessage("");
+      setUsed(new Set());
+    }
+  }, [game?.game_number]);
+
+  /* ------------------------------------------------------------------------
+   * EFFECT: countdown. started_at is in the FUTURE (now + 3s), so the
+   * remaining time until it is the "get ready" number.
+   * ---------------------------------------------------------------------- */
+  useEffect(() => {
+    if (!game || game.status !== "playing" || !game.started_at) {
+      setCountdown(0);
       return;
     }
 
-    seenGameNumber.current = game.game_number;
+    // Copy to a const: TypeScript loses the "not null" check inside the
+    // nested function below, so we capture the narrowed string here.
+    const startedAt = game.started_at;
 
-    setIndex(0);
-    setInput("");
-    setMessage("");
-    setUsed(new Set());
-    setCountdown(COUNTDOWN_SECONDS);
-  }, [game]);
+    const updateCountdown = () => {
+      const start = new Date(startedAt).getTime();
 
+      if (!Number.isFinite(start)) {
+        setCountdown(0);
+        return;
+      }
+
+      const remaining = Math.max(0, start - Date.now());
+
+      setCountdown(Math.ceil(remaining / 1000));
+    };
+
+    updateCountdown();
+
+    const id = window.setInterval(updateCountdown, 100);
+
+    return () => window.clearInterval(id);
+  }, [game?.status, game?.started_at]);
+
+  /* ------------------------------------------------------------------------
+   * EFFECT: live race clock (seconds since started_at), updated every 50ms.
+   * ---------------------------------------------------------------------- */
   useEffect(() => {
-    if (countdown <= 0) return;
+    if (!game || game.status !== "playing" || !game.started_at) {
+      setRaceTime(0);
+      return;
+    }
 
-    const id = window.setTimeout(() => setCountdown((c) => c - 1), 1000);
+    const startedAt = game.started_at;
 
-    return () => window.clearTimeout(id);
-  }, [countdown]);
+    const updateTime = () => {
+      const start = new Date(startedAt).getTime();
 
+      if (!Number.isFinite(start)) {
+        setRaceTime(0);
+        return;
+      }
+
+      const elapsed = Math.max(0, Date.now() - start);
+
+      setRaceTime(elapsed / 1000);
+    };
+
+    updateTime();
+
+    const id = window.setInterval(updateTime, 50);
+
+    return () => window.clearInterval(id);
+  }, [game?.status, game?.started_at]);
+
+  /* ------------------------------------------------------------------------
+   * DERIVED DATA
+   * ---------------------------------------------------------------------- */
+
+  // Scoreboard order: finishers by finish time, then everyone else by progress.
   const ranked = useMemo(
     () =>
       [...players].sort((a, b) => {
         if (a.finished_at && b.finished_at) {
-          return a.finished_at.localeCompare(b.finished_at);
+          return (
+            new Date(a.finished_at).getTime() -
+            new Date(b.finished_at).getTime()
+          );
         }
 
         if (a.finished_at) return -1;
@@ -363,16 +513,32 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     [players],
   );
 
-  const finishedPlayers = players.filter((p) => p.finished_at);
+  // Only players who have finished, fastest first.
+  const finishedPlayers = useMemo(
+    () =>
+      players
+        .filter(
+          (p): p is Player & { finished_at: string } => p.finished_at !== null,
+        )
+        .sort((a, b) => {
+          return (
+            new Date(a.finished_at).getTime() -
+            new Date(b.finished_at).getTime()
+          );
+        }),
+    [players],
+  );
 
-  const winner = finishedPlayers.length > 0 ? ranked[0] : null;
+  const winner = finishedPlayers[0] ?? null;
 
   const everyoneFinished =
     players.length > 0 && finishedPlayers.length === players.length;
 
+  // "first" mode ends when anyone finishes; "last" waits for everyone.
   const raceIsOver =
     !!winner && (game?.finish_mode === "first" || everyoneFinished);
 
+  // Which screen to show. Order matters: results beats countdown beats race.
   const phase: "menu" | "lobby" | "countdown" | "race" | "results" = !room
     ? "menu"
     : !game || game.status === "waiting"
@@ -383,6 +549,11 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
           ? "countdown"
           : "race";
 
+  /* ------------------------------------------------------------------------
+   * ACTIONS
+   * ---------------------------------------------------------------------- */
+
+  // Validate + clean the display name. Returns null (and shows error) if bad.
   const validName = () => {
     const n = name.trim().slice(0, MAX_NAME_LENGTH);
 
@@ -394,6 +565,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     return n;
   };
 
+  // Switch the UI into a room (after create or join succeeded).
   const enterRoom = (code: string, displayName: string) => {
     localStorage.setItem(NAME_KEY, displayName);
 
@@ -402,10 +574,12 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     setGame(null);
     setPlayers([]);
     setCountdown(0);
+    setRaceTime(0);
     setError("");
     setRoom(code);
   };
 
+  // CREATE GAME: make a room row, then add myself as the first player.
   const handleCreate = async () => {
     const n = validName();
 
@@ -415,10 +589,11 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     setError("");
 
     try {
-      await removeMe();
+      await removeMe(); // leave any old room first
 
       let code = "";
 
+      // Retry up to 5 times if the random code is already taken (409).
       for (let attempt = 0; ; attempt++) {
         code = makeRoomCode();
 
@@ -462,6 +637,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     }
   };
 
+  // JOIN GAME: check the room exists / is waiting / isn't full, then add me.
   const handleJoin = async () => {
     const n = validName();
 
@@ -513,6 +689,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
           }),
         });
       } catch (e) {
+        // 409 = unique constraint on (room_code, display_name)
         if (e instanceof ApiError && e.status === 409) {
           setError("that name is already taken in this game.");
           return;
@@ -531,6 +708,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     }
   };
 
+  // LEAVE: clear local state right away, then clean up the database.
   const handleLeave = async () => {
     const currentRoom = room;
     const hostId = game?.host_id;
@@ -538,6 +716,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     setRoom(null);
     setGame(null);
     setPlayers([]);
+    setRaceTime(0);
     setError("");
 
     if (!currentRoom) return;
@@ -549,11 +728,13 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     }
   };
 
+  // Leave the room AND return to the solo screen.
   const handleExit = async () => {
     await handleLeave();
     onExit();
   };
 
+  // START GAME (host only): pick prompts + start time, flip status to playing.
   const handleStart = async () => {
     if (!room || !game || !isHost) return;
 
@@ -568,14 +749,21 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     try {
       const prompts = makePrompts(TARGET_WORDS, difficulty);
 
-      const startedAt = new Date().toISOString();
+      // Official race start = now + countdown. Everyone gets this SAME
+      // timestamp from the database, so all clocks line up.
+      const startedAt = new Date(
+        Date.now() + COUNTDOWN_SECONDS * 1000,
+      ).toISOString();
 
+      // Clear last round's progress/finish times BEFORE the game flips on.
       await resetPlayers(room);
 
+      // Count one game per player in the global counter.
       for (let i = 0; i < players.length; i++) {
         await countGamePlayed(setGamesPlayed);
       }
 
+      // This write is what makes every other computer start.
       await patchGame(room, {
         status: "playing",
         prompts,
@@ -594,6 +782,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     }
   };
 
+  // PLAY AGAIN (host only): back to the lobby with everyone's progress reset.
   const handleBackToLobby = async () => {
     if (!room || !isHost) return;
 
@@ -605,6 +794,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
       });
 
       await resetPlayers(room);
+      setRaceTime(0);
     } catch (e) {
       console.error("GROUP LOBBY ERROR:", e);
 
@@ -614,10 +804,16 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     }
   };
 
+  // SUBMIT A WORD: validate, advance locally, then sync to the database.
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
 
-    const prompt = game?.prompts?.[index];
+    // Ignore submissions before the official start time.
+    if (!game?.started_at || Date.now() < new Date(game.started_at).getTime()) {
+      return;
+    }
+
+    const prompt = game.prompts?.[index];
 
     if (!prompt || index >= TARGET_WORDS) {
       return;
@@ -627,6 +823,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
 
     const fragment = prompt.fragment;
 
+    // --- validation rules (each shows a message and stops) ---
     if (word.length <= fragment.length) {
       setMessage(`your word must be at least ${fragment.length + 1} letters.`);
       return;
@@ -652,6 +849,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
       return;
     }
 
+    // --- word accepted ---
     const next = index + 1;
 
     setUsed((current) => {
@@ -666,23 +864,33 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     setInput("");
     setMessage(next >= TARGET_WORDS ? "" : "good word!");
 
+    // --- sync to database (queued so order is guaranteed) ---
     if (next >= TARGET_WORDS) {
-      saveFinished().catch((e) => console.error("FINISH SAVE ERROR:", e));
+      // 1) write progress = 20 so other screens show 20/20
+      // 2) call the SQL function, which stamps finished_at = now() on the server
+      queueSave(() => saveProgress(TARGET_WORDS));
+      queueSave(saveFinished);
     } else {
-      saveProgress(next).catch((e) => console.error("PROGRESS SAVE ERROR:", e));
+      queueSave(() => saveProgress(next));
     }
   };
 
+  /* ------------------------------------------------------------------------
+   * RENDER HELPERS
+   * ---------------------------------------------------------------------- */
+
+  // For my own row during the race, use my local index (instant) instead of
+  // the polled value (up to 1s old). Everyone else uses the polled value.
   const progressOf = (p: Player) =>
     phase === "race" && p.player_id === me ? index : p.progress;
 
+  // Finish time = server finished_at minus the shared started_at.
   const getElapsedSeconds = (p: Player) => {
     if (!game?.started_at || !p.finished_at) {
       return null;
     }
 
     const start = new Date(game.started_at).getTime();
-
     const finish = new Date(p.finished_at).getTime();
 
     if (!Number.isFinite(start) || !Number.isFinite(finish)) {
@@ -698,6 +906,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     return `${seconds.toFixed(2)}s`;
   };
 
+  // Progress bars for every player (used in race + results screens).
   const renderScoreboard = () => (
     <div className="mp-board">
       {(phase === "results" ? ranked : players).map((p) => {
@@ -737,6 +946,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
               />
             </div>
 
+            {/* Finished players show their time; others show "n/20" */}
             <span className="mp-count">
               {elapsed !== null
                 ? formatTime(elapsed)
@@ -748,6 +958,9 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     </div>
   );
 
+  /* ------------------------------------------------------------------------
+   * RENDER
+   * ---------------------------------------------------------------------- */
   return (
     <section className="card mp-screen">
       <div className="mp-stats">
@@ -767,6 +980,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
         )}
       </div>
 
+      {/* ============ MENU: enter name, create or join ============ */}
       {phase === "menu" && (
         <div className="mp-menu">
           <div className="results-header">
@@ -838,6 +1052,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
         </div>
       )}
 
+      {/* ============ LOBBY: wait for players, host picks settings ============ */}
       {phase === "lobby" && room && (
         <div className="mp-lobby">
           <div className="results-header">
@@ -877,6 +1092,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
 
           <div className="divider" />
 
+          {/* Only the host sees settings + start button */}
           {isHost ? (
             <>
               <div className="setting">
@@ -986,6 +1202,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
         </div>
       )}
 
+      {/* ============ COUNTDOWN: "get ready" 3..2..1 ============ */}
       {phase === "countdown" && (
         <div className="mp-countdown-screen">
           <small>get ready</small>
@@ -1000,9 +1217,23 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
         </div>
       )}
 
+      {/* ============ RACE: type words, watch the scoreboard ============ */}
       {phase === "race" && (
         <div className="mp-race">
+          {/* Live race clock */}
+          <div
+            style={{
+              textAlign: "center",
+              fontSize: "22px",
+              fontWeight: 700,
+              marginBottom: "18px",
+            }}
+          >
+            {raceTime.toFixed(2)}s
+          </div>
+
           {index >= TARGET_WORDS ? (
+            // I'm done; waiting for the server to confirm / others to finish.
             <div className="results-header">
               <small>you finished!</small>
 
@@ -1062,6 +1293,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
         </div>
       )}
 
+      {/* ============ RESULTS: winner + final times ============ */}
       {phase === "results" && winner && (
         <div className="mp-results">
           <div className="results-header">
