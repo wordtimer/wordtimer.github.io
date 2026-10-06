@@ -549525,6 +549525,10 @@ zwitterionic
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
 const DEFAULT_TIME = 10;
+const DEFAULT_TIMED_LIVES = 3;
+const TIMED_LIFE_OPTIONS = [1, 2, 3, 4, 5];
+const TIMED_SHORT_TIME = 5;
+const TIMED_SHORT_AFTER_WORDS_PER_PLAYER = 20;
 const MODERN_WORDS = new Set([
   "rizz",
   "mog",
@@ -549800,7 +549804,9 @@ export default function App() {
     weekly: number | null;
   }>({ alltime: null, weekly: null });
 
-  const [roundTime, setRoundTime] = useState<number>(10);
+  const [roundTime, setRoundTime] = useState<number>(DEFAULT_TIME);
+  const [timedLives, setTimedLives] = useState(DEFAULT_TIMED_LIVES);
+  const [shortenTimed, setShortenTimed] = useState(true);
 
   const [gameMode, setGameMode] = useState<GameMode>("rush");
   const wordInputRef = useRef<HTMLInputElement | null>(null);
@@ -549920,7 +549926,13 @@ export default function App() {
     setPrompt(nextPrompt.fragment);
     setPromptExamples(nextPrompt.examples);
 
-    setTime(roundTime);
+    setTime(
+      gameMode === "timed" &&
+      shortenTimed &&
+      score >= TIMED_SHORT_AFTER_WORDS_PER_PLAYER
+        ? TIMED_SHORT_TIME
+        : roundTime,
+    );
 
     roundStartedAt.current = Date.now();
   }, [time, gameOver, gameMode, prompt, promptExamples, difficulty, roundTime]);
@@ -550018,7 +550030,11 @@ export default function App() {
     setPromptExamples(nextPrompt.examples);
 
     if (gameMode === "timed") {
-      setTime(roundTime);
+      const nextTimedTime =
+        shortenTimed && nextScore >= TIMED_SHORT_AFTER_WORDS_PER_PLAYER
+          ? TIMED_SHORT_TIME
+          : roundTime;
+      setTime(nextTimedTime);
     }
 
     roundStartedAt.current = Date.now();
@@ -550067,7 +550083,7 @@ export default function App() {
     setPendingRun(null);
     setHighlightRanks({ alltime: null, weekly: null });
 
-    const startingLives = difficulty === "superEasy" ? 5 : 3;
+    const startingLives = timedLives;
 
     const nextPrompt = pickPrompt(difficulty, gameMode);
     const now = Date.now();
@@ -550374,6 +550390,48 @@ export default function App() {
     </div>
   );
 
+  const renderTimedLives = () => (
+    <div className="setting">
+      <small>lives</small>
+      <div className="option-grid time-options">
+        {TIMED_LIFE_OPTIONS.map((value) => (
+          <button
+            type="button"
+            key={value}
+            className={
+              gameMode === "timed" && timedLives === value
+                ? "option selected"
+                : "option"
+            }
+            onClick={() => {
+              setTimedLives(value);
+              setGameMode("timed");
+            }}
+          >
+            <strong>{value}</strong>
+            <span>♥</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
+  const renderTimedSpeedup = () => (
+    <div className="setting">
+      <small>speed up after</small>
+      <button
+        type="button"
+        className={shortenTimed ? "option selected" : "option"}
+        onClick={() => setShortenTimed((value) => !value)}
+      >
+        <strong>{shortenTimed ? "on" : "off"}</strong>
+        <span>
+          after {TIMED_SHORT_AFTER_WORDS_PER_PLAYER} prompts → {TIMED_SHORT_TIME}s
+        </span>
+      </button>
+    </div>
+  );
+
   const renderTime = () => (
     <div className="setting">
       <small>time per word</small>
@@ -550481,7 +550539,8 @@ export default function App() {
               <p>
                 you have the selected amount of time to find a word. running out
                 of time costs a life. collect all 26 letters to gain an extra
-                life. wrong words do not cost a life.
+                life. after 20 prompts, the timer can shorten to 5 seconds.
+                wrong words do not cost a life.
               </p>
             </div>
 
@@ -550677,7 +550736,13 @@ export default function App() {
 
               {renderMode()}
 
-              {gameMode === "timed" && renderTime()}
+              {gameMode === "timed" && (
+                <>
+                  {renderTime()}
+                  {renderTimedLives()}
+                  {renderTimedSpeedup()}
+                </>
+              )}
 
               <button
                 type="button"
@@ -550824,7 +550889,13 @@ export default function App() {
 
               {renderDifficulty()}
 
-              {renderTime()}
+              {gameMode === "timed" && (
+                <>
+                  {renderTime()}
+                  {renderTimedLives()}
+                  {renderTimedSpeedup()}
+                </>
+              )}
 
               {renderMode()}
 
