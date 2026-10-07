@@ -37,6 +37,56 @@ const POLL_MS = 1000;
 const TIMED_POLL_MS = 500; // poll faster during timed so the potato moves quickly
 const COUNTDOWN_SECONDS = 3;
 const TIMEOUT_GRACE_MS = 300; // host waits a hair past the deadline before failing a turn
+const BACKUP_GRACE_MS = 2000; // non-host clients step in if the host is stalled
+
+/* ==========================================================================
+ * SHARED CLOCK
+ * Every device estimates (serverTime - localTime) and uses now() instead of
+ * Date.now(), so deadlines written by one device mean the same thing on all.
+ * Requires the server_now() SQL function (see notes).
+ * ========================================================================== */
+
+let clockOffset = 0; // serverNow - localNow, in ms
+let bestSample = { rtt: Infinity, at: 0 };
+
+const now = () => Date.now() + clockOffset;
+const nowIso = () => new Date(now()).toISOString();
+
+async function syncClock(samples = 1) {
+  for (let i = 0; i < samples; i++) {
+    const t0 = Date.now();
+
+    try {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/server_now`, {
+        method: "POST",
+        headers: {
+          apikey: SUPABASE_KEY,
+          Authorization: `Bearer ${SUPABASE_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      });
+
+      const t1 = Date.now();
+
+      if (!res.ok) continue;
+
+      const server = Number(await res.json());
+
+      if (!Number.isFinite(server)) continue;
+
+      const rtt = t1 - t0;
+
+      // keep the lowest-latency sample, but let old samples expire
+      if (rtt <= bestSample.rtt || t1 - bestSample.at > 120_000) {
+        bestSample = { rtt, at: t1 };
+        clockOffset = server - (t0 + t1) / 2;
+      }
+    } catch {
+      // falls back to the local clock
+    }
+  }
+}
 
 /* ==========================================================================
  * TYPES
@@ -54,15 +104,19 @@ export type PromptItem = {
 
 // Everything about the current hot-potato turn lives in ONE json value so it
 // can be swapped atomically (compare-and-set on game.turn_number).
+// Host settings (limit / shorten / maxLives) live here so every client
+// computes the next turn from the same rules.
 type TurnState = {
   current: string; // player_id whose turn it is
   origin: string; // player who first received this fragment
   prompt: PromptItem; // fragment being passed around
   promptIndex: number; // index into game.prompts (wraps)
   deadline: string;
-  skipDeadline: string;
+  skipDeadline: string; // the real end of the current turn
   turnStartedAt: string;
   limit: number;
+  shorten: boolean;
+  maxLives: number;
   order: string[];
   lives: Record<string, number>;
   remaining: Record<string, number>;
@@ -174,9 +228,6 @@ function checkWord(
 
 /* ---- hot potato transitions ---------------------------------------------- */
 
-const deadlineFrom = (seconds: number) =>
-  new Date(Date.now() + seconds * 1000).toISOString();
-
 const addLetters = (word: string, current: string[]) => {
   const next = new Set(current);
   for (const char of word.toUpperCase()) {
@@ -184,6 +235,21 @@ const addLetters = (word: string, current: string[]) => {
   }
   return [...next];
 };
+
+// Per-turn limit for timed mode, from the rules stored in the turn state
+// (NOT from whichever client happens to be solving).
+const timedLimitFor = (ts: TurnState) =>
+  ts.shorten &&
+  ts.totalWords >= ts.order.length * TIMED_SHORT_AFTER_WORDS_PER_PLAYER
+    ? TIMED_SHORT_TIME_DEFAULT
+    : ts.limit;
+
+// Seconds the current player has used on this turn (capped at the skip time).
+const turnElapsed = (ts: TurnState) =>
+  Math.min(
+    SURVIVAL_SKIP_SECONDS,
+    Math.max(0, (now() - new Date(ts.turnStartedAt).getTime()) / 1000),
+  );
 
 function aliveIds(ts: TurnState, present: Set<string>) {
   return new Set(
@@ -213,11 +279,11 @@ function withNewFragment(
   limit: number,
 ): TurnState {
   const promptIndex = ts.promptIndex + 1;
-  const now = new Date().toISOString();
-  const nextLimit =
-    mode === "survival"
-      ? Math.min(SURVIVAL_SKIP_SECONDS, ts.remaining[holder] ?? SURVIVAL_TIME)
-      : limit;
+  const t = now(); // ONE timestamp for the whole turn
+  const bank = ts.remaining[holder] ?? SURVIVAL_TIME;
+  const turnSeconds =
+    mode === "survival" ? Math.min(SURVIVAL_SKIP_SECONDS, bank) : limit;
+  const bankSeconds = mode === "survival" ? bank : limit;
 
   return {
     ...ts,
@@ -225,11 +291,9 @@ function withNewFragment(
     origin: holder,
     promptIndex,
     prompt: prompts[promptIndex % prompts.length] ?? ts.prompt,
-    deadline: deadlineFrom(
-      mode === "survival" ? (ts.remaining[holder] ?? SURVIVAL_TIME) : nextLimit,
-    ),
-    skipDeadline: deadlineFrom(nextLimit),
-    turnStartedAt: now,
+    deadline: new Date(t + bankSeconds * 1000).toISOString(),
+    skipDeadline: new Date(t + turnSeconds * 1000).toISOString(),
+    turnStartedAt: new Date(t).toISOString(),
     note,
   };
 }
@@ -276,20 +340,20 @@ function solveTimedTurn(
   prompts: PromptItem[],
   present: Set<string>,
   nameOf: (id: string) => string,
-  limit: number,
-  shorten: boolean,
 ): TurnState {
   const base = recordAcceptedWord(ts, word, ts.current, nameOf);
   const alive = aliveIds(base, present);
   const idx = ts.order.indexOf(ts.current);
   const holder = firstAliveFrom(ts.order, alive, idx + 1) ?? ts.current;
-  const nextLimit =
-    shorten &&
-    base.totalWords >= present.size * TIMED_SHORT_AFTER_WORDS_PER_PLAYER
-      ? TIMED_SHORT_TIME_DEFAULT
-      : limit;
 
-  return withNewFragment(base, prompts, holder, base.note, "timed", nextLimit);
+  return withNewFragment(
+    base,
+    prompts,
+    holder,
+    `${nameOf(ts.current)} typed ${word}`,
+    "timed",
+    nextLimit,
+  );
 }
 
 function failTimedTurn(
@@ -297,8 +361,6 @@ function failTimedTurn(
   prompts: PromptItem[],
   present: Set<string>,
   nameOf: (id: string) => string,
-  limit: number,
-  shorten: boolean,
 ): TurnState {
   const current = ts.current;
   const livesLeft = !present.has(current)
@@ -316,7 +378,7 @@ function failTimedTurn(
     eliminated,
     endedAt:
       aliveIds({ ...ts, lives, eliminated }, present).size <= 1
-        ? new Date().toISOString()
+        ? nowIso()
         : ts.endedAt,
     note: !present.has(current)
       ? `${nameOf(current)} left`
@@ -330,13 +392,15 @@ function failTimedTurn(
 
   const idx = ts.order.indexOf(current);
   const holder = firstAliveFrom(ts.order, alive, idx + 1) ?? current;
-  const nextLimit =
-    shorten &&
-    base.totalWords >= present.size * TIMED_SHORT_AFTER_WORDS_PER_PLAYER
-      ? TIMED_SHORT_TIME_DEFAULT
-      : limit;
 
-  return withNewFragment(base, prompts, holder, base.note, "timed", nextLimit);
+  return withNewFragment(
+    base,
+    prompts,
+    holder,
+    base.note,
+    "timed",
+    timedLimitFor(base),
+  );
 }
 
 function solveSurvivalTurn(
@@ -346,13 +410,12 @@ function solveSurvivalTurn(
   present: Set<string>,
   nameOf: (id: string) => string,
 ): TurnState {
-  const elapsed = Math.min(
-    SURVIVAL_SKIP_SECONDS,
-    Math.max(0, (Date.now() - new Date(ts.turnStartedAt).getTime()) / 1000),
-  );
   const remaining = {
     ...ts.remaining,
-    [ts.current]: Math.max(0, (ts.remaining[ts.current] ?? 0) - elapsed),
+    [ts.current]: Math.max(
+      0,
+      (ts.remaining[ts.current] ?? 0) - turnElapsed(ts),
+    ),
   };
   const base = recordAcceptedWord(
     { ...ts, remaining },
@@ -365,7 +428,7 @@ function solveSurvivalTurn(
   const holder = firstAliveFrom(ts.order, alive, idx + 1) ?? ts.current;
 
   if (alive.size <= 1) {
-    return { ...base, endedAt: new Date().toISOString() };
+    return { ...base, endedAt: nowIso() };
   }
 
   return withNewFragment(
@@ -384,17 +447,20 @@ function failSurvivalTurn(
   present: Set<string>,
   nameOf: (id: string) => string,
 ): TurnState {
-  const elapsed = Math.min(
-    SURVIVAL_SKIP_SECONDS,
-    Math.max(0, (Date.now() - new Date(ts.turnStartedAt).getTime()) / 1000),
-  );
   const current = ts.current;
+  const gone = !present.has(current);
+
+  // A player who left loses their whole bank, otherwise they'd stay "alive"
+  // in the UI and the turn would be re-failed forever.
   const remaining = {
     ...ts.remaining,
-    [current]: Math.max(0, (ts.remaining[current] ?? 0) - elapsed),
+    [current]: gone
+      ? 0
+      : Math.max(0, (ts.remaining[current] ?? 0) - turnElapsed(ts)),
   };
+  const out = (remaining[current] ?? 0) <= 0;
   const eliminated =
-    (remaining[current] ?? 0) <= 0 && !ts.eliminated.includes(current)
+    out && !ts.eliminated.includes(current)
       ? [...ts.eliminated, current]
       : ts.eliminated;
 
@@ -404,10 +470,11 @@ function failSurvivalTurn(
     eliminated,
     endedAt:
       aliveIds({ ...ts, remaining, eliminated }, present).size <= 1
-        ? new Date().toISOString()
+        ? nowIso()
         : ts.endedAt,
-    note:
-      (remaining[current] ?? 0) <= 0
+    note: gone
+      ? `${nameOf(current)} left`
+      : out
         ? `${nameOf(current)} is out!`
         : `${nameOf(current)} was skipped after 15 seconds`,
   };
@@ -563,14 +630,14 @@ function patchGame(room: string, body: Record<string, unknown>) {
     headers: MINIMAL,
     body: JSON.stringify({
       ...body,
-      updated_at: new Date().toISOString(),
+      updated_at: nowIso(),
     }),
   });
 }
 
 // Compare-and-set for hot potato. The `turn_number=eq.N` filter means the
 // update only applies if nobody else advanced the turn first (e.g. the solver
-// and the host's timeout firing at the same moment). Returns the new row, or
+// and a timeout firing at the same moment). Returns the new row, or
 // null if we lost the race (which is fine: the poll will show the winner's state).
 async function patchTurn(room: string, expectedTurn: number, next: TurnState) {
   const rows = await request<Pick<Game, "turn_state" | "turn_number">[] | null>(
@@ -583,7 +650,7 @@ async function patchTurn(room: string, expectedTurn: number, next: TurnState) {
       body: JSON.stringify({
         turn_state: next,
         turn_number: expectedTurn + 1,
-        updated_at: new Date().toISOString(),
+        updated_at: nowIso(),
       }),
     },
   );
@@ -678,7 +745,8 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
 
   const seenGameNumber = useRef(0);
   const saveChain = useRef<Promise<unknown>>(Promise.resolve());
-  const firedTurn = useRef(""); // host: which turn I already tried to time out
+  const firedTurn = useRef(""); // which turn I already tried to time out
+  const jitter = useRef(Math.random() * 800); // spreads out backup timeouts
 
   const isHost = !!game && game.host_id === me;
 
@@ -699,6 +767,25 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
    * EFFECTS
    * ---------------------------------------------------------------------- */
 
+  // Keep the shared clock fresh: on mount, every minute, and when the tab
+  // comes back to the foreground.
+  useEffect(() => {
+    syncClock(5);
+
+    const id = window.setInterval(() => syncClock(1), 60_000);
+
+    const onVisible = () => {
+      if (document.visibilityState === "visible") syncClock(2);
+    };
+
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
+
   useEffect(() => {
     loadGamesPlayed(setGamesPlayed);
 
@@ -709,7 +796,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     return () => window.clearInterval(id);
   }, []);
 
-  // Poll the room + players. Faster while a timed game is running.
+  // Poll the room + players. Faster while a timed/survival game is running.
   const pollMs =
     isTimed && game?.status === "playing" ? TIMED_POLL_MS : POLL_MS;
 
@@ -808,7 +895,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
         return;
       }
 
-      const remaining = Math.max(0, start - Date.now());
+      const remaining = Math.max(0, start - now());
 
       setCountdown(Math.ceil(remaining / 1000));
     };
@@ -837,7 +924,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
         return;
       }
 
-      const elapsed = Math.max(0, Date.now() - start);
+      const elapsed = Math.max(0, now() - start);
 
       setRaceTime(elapsed / 1000);
     };
@@ -858,7 +945,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
 
     const start = new Date(game.started_at).getTime();
     const update = () => {
-      const end = ts?.endedAt ? new Date(ts.endedAt).getTime() : Date.now();
+      const end = ts?.endedAt ? new Date(ts.endedAt).getTime() : now();
       setGameElapsed(Math.max(0, (end - start) / 1000));
     };
 
@@ -867,7 +954,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     return () => window.clearInterval(id);
   }, [game?.status, game?.started_at, ts?.endedAt]);
 
-  // Timed: seconds left on the current turn (and the 15s skip clock in survival).
+  // Timed: seconds left on the current turn.
   useEffect(() => {
     if (!isTimed || !ts || game?.status !== "playing") {
       setTurnLeft(0);
@@ -875,20 +962,20 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
       return;
     }
 
-    const deadline = new Date(ts.deadline).getTime();
-    const skipDeadline = new Date(ts.skipDeadline).getTime();
-    const turnStart = new Date(ts.turnStartedAt).getTime();
-    const holderRemaining = ts.remaining[ts.current] ?? 0;
+    const deadline = new Date(
+      isSurvival ? ts.skipDeadline : ts.deadline,
+    ).getTime();
 
     const update = () => {
-      const now = Date.now();
-
       if (isSurvival) {
-        setTurnLeft(Math.max(0, holderRemaining - (now - turnStart) / 1000));
-        setSkipLeft(Math.max(0, (skipDeadline - now) / 1000));
+        const playerRemaining = ts.remaining[ts.current] ?? 0;
+        const elapsed = Math.max(
+          0,
+          (Date.now() - new Date(ts.turnStartedAt).getTime()) / 1000,
+        );
+        setTurnLeft(Math.max(0, playerRemaining - elapsed));
       } else {
-        setTurnLeft(Math.max(0, (deadline - now) / 1000));
-        setSkipLeft(0);
+        setTurnLeft(Math.max(0, (deadline - Date.now()) / 1000));
       }
     };
 
@@ -897,15 +984,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     const id = window.setInterval(update, 100);
 
     return () => window.clearInterval(id);
-  }, [
-    isTimed,
-    isSurvival,
-    ts?.deadline,
-    ts?.skipDeadline,
-    ts?.turnStartedAt,
-    ts?.current,
-    game?.status,
-  ]);
+  }, [isTimed, ts?.skipDeadline, game?.status]);
 
   /* ------------------------------------------------------------------------
    * DERIVED DATA
@@ -917,6 +996,13 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
   );
 
   const nameOf = (id: string) => playerById.get(id)?.display_name ?? "someone";
+
+  // Refs so the timeout effect always sees fresh players/names without
+  // restarting its interval on every poll.
+  const playersRef = useRef(players);
+  playersRef.current = players;
+  const nameOfRef = useRef(nameOf);
+  nameOfRef.current = nameOf;
 
   // ---- race modes ----
   const ranked = useMemo(
@@ -1043,15 +1129,25 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
           ? "countdown"
           : "race";
 
+  // Apply a freshly written turn row locally so the actor sees it instantly
+  // instead of waiting for the next poll.
+  const applyTurnRow = (row: Pick<Game, "turn_state" | "turn_number">) => {
+    setGame((cur) =>
+      cur && row.turn_number >= cur.turn_number
+        ? { ...cur, turn_state: row.turn_state, turn_number: row.turn_number }
+        : cur,
+    );
+  };
+
   /* ------------------------------------------------------------------------
-   * EFFECT (host only): hot-potato timeouts.
-   * The host's client is the referee for "time ran out" so exactly one
-   * machine decides it. patchTurn's compare-and-set covers the case where
-   * the solver submits at the very last moment.
+   * EFFECT: turn timeouts.
+   * The host is the primary referee (short grace). Every other client is a
+   * backup with a longer, jittered grace, so a backgrounded/throttled host
+   * can't freeze the game. patchTurn's compare-and-set makes it safe for
+   * several clients to try: only one write wins.
    * ---------------------------------------------------------------------- */
   useEffect(() => {
     if (
-      !isHost ||
       !room ||
       !game ||
       !ts ||
@@ -1065,22 +1161,28 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     const turnKey = `${game.game_number}:${game.turn_number}`;
     const expected = game.turn_number;
     const prompts = game.prompts ?? [];
+    const grace = isHost ? TIMEOUT_GRACE_MS : BACKUP_GRACE_MS + jitter.current;
 
     const check = () => {
       if (firedTurn.current === turnKey) return;
 
-      const present = new Set<string>(players.map((p) => p.player_id));
-      const deadline = isSurvival ? ts.skipDeadline : ts.deadline;
-      const expired =
-        Date.now() >= new Date(deadline).getTime() + TIMEOUT_GRACE_MS;
+      // don't referee during the pre-game countdown
+      if (now() < new Date(game.started_at ?? 0).getTime()) return;
 
-      if (present.has(ts.current) && !expired) return;
+      const present = new Set<string>(
+        playersRef.current.map((p) => p.player_id),
+      );
+      const late = now() >= new Date(ts.skipDeadline).getTime() + grace;
+      const absent = !present.has(ts.current);
+
+      if (!late && !(absent && isHost)) return;
 
       firedTurn.current = turnKey;
 
+      const nameFn = nameOfRef.current;
       const next = isSurvival
-        ? failSurvivalTurn(ts, prompts, present, nameOf)
-        : failTimedTurn(ts, prompts, present, nameOf, turnTime, shortenTimed);
+        ? failSurvivalTurn(ts, prompts, present, nameFn)
+        : failTimedTurn(ts, prompts, present, nameFn);
 
       patchTurn(room, expected, next)
         .then((row) => {
@@ -1104,23 +1206,10 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     game?.game_number,
     game?.turn_number,
     game?.status,
-    ts?.deadline,
+    game?.started_at,
     ts?.skipDeadline,
-    players,
     timedOver,
-    turnTime,
-    shortenTimed,
   ]);
-
-  // Apply a freshly written turn row locally so the actor sees it instantly
-  // instead of waiting for the next poll.
-  const applyTurnRow = (row: Pick<Game, "turn_state" | "turn_number">) => {
-    setGame((cur) =>
-      cur && row.turn_number >= cur.turn_number
-        ? { ...cur, turn_state: row.turn_state, turn_number: row.turn_number }
-        : cur,
-    );
-  };
 
   /* ------------------------------------------------------------------------
    * ACTIONS
@@ -1319,9 +1408,13 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
         modeChoice,
       );
 
-      const startedAt = new Date(
-        Date.now() + COUNTDOWN_SECONDS * 1000,
-      ).toISOString();
+      // Do the slow network work BEFORE stamping the start time, so the
+      // countdown isn't eaten by it.
+      await resetPlayers(room);
+      await syncClock(1);
+
+      const startedAtMs = now() + COUNTDOWN_SECONDS * 1000;
+      const startedAt = new Date(startedAtMs).toISOString();
 
       let turnState: TurnState | null = null;
 
@@ -1329,21 +1422,23 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
         const order = players.map((p) => p.player_id);
         const isSurvivalMode = modeChoice === "survival";
         const initialLimit = isSurvivalMode ? SURVIVAL_TIME : turnTime;
+        const firstTurnSeconds = isSurvivalMode
+          ? SURVIVAL_SKIP_SECONDS
+          : initialLimit;
 
         turnState = {
           current: order[0],
           origin: order[0],
           prompt: prompts[0],
           promptIndex: 0,
-          deadline: new Date(
-            new Date(startedAt).getTime() + initialLimit * 1000,
-          ).toISOString(),
+          deadline: new Date(startedAtMs + initialLimit * 1000).toISOString(),
           skipDeadline: new Date(
-            new Date(startedAt).getTime() +
-              (isSurvivalMode ? SURVIVAL_SKIP_SECONDS : initialLimit) * 1000,
+            startedAtMs + firstTurnSeconds * 1000,
           ).toISOString(),
           turnStartedAt: startedAt,
           limit: initialLimit,
+          shorten: shortenTimed,
+          maxLives: isSurvivalMode ? 1 : timedLives,
           order,
           lives: Object.fromEntries(
             order.map((id) => [id, isSurvivalMode ? 1 : timedLives]),
@@ -1359,12 +1454,6 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
           endedAt: null,
           survival: isSurvivalMode,
         };
-      }
-
-      await resetPlayers(room);
-
-      for (let i = 0; i < players.length; i++) {
-        await countGamePlayed(setGamesPlayed);
       }
 
       firedTurn.current = "";
@@ -1384,7 +1473,13 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
         turn_state: turnState,
       });
 
-      await loadGamesPlayed(setGamesPlayed);
+      // Cosmetic counter: runs after the game is live, never delays the start.
+      void (async () => {
+        for (let i = 0; i < players.length; i++) {
+          await countGamePlayed(setGamesPlayed);
+        }
+        await loadGamesPlayed(setGamesPlayed);
+      })();
     } catch (e) {
       console.error("GROUP START ERROR:", e);
 
@@ -1421,7 +1516,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
 
-    if (!game?.started_at || Date.now() < new Date(game.started_at).getTime()) {
+    if (!game?.started_at || now() < new Date(game.started_at).getTime()) {
       return;
     }
 
@@ -1478,7 +1573,12 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
 
     if (!room || !game || !ts || !myTurn || timedOver) return;
 
-    if (!game.started_at || Date.now() < new Date(game.started_at).getTime()) {
+    if (!game.started_at || now() < new Date(game.started_at).getTime()) {
+      return;
+    }
+
+    if (now() > new Date(ts.skipDeadline).getTime() + TIMEOUT_GRACE_MS) {
+      setMessage("too late!");
       return;
     }
 
@@ -1500,15 +1600,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     const present = new Set<string>(players.map((p) => p.player_id));
     const next = isSurvival
       ? solveSurvivalTurn(ts, word, game.prompts ?? [], present, nameOf)
-      : solveTimedTurn(
-          ts,
-          word,
-          game.prompts ?? [],
-          present,
-          nameOf,
-          turnTime,
-          shortenTimed,
-        );
+      : solveTimedTurn(ts, word, game.prompts ?? [], present, nameOf);
 
     setInput("");
 
@@ -1596,12 +1688,13 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     if (!ts) return null;
 
     const rows = phase === "results" ? timedRanking : timedSeats;
+    const maxLives = Math.max(1, ts.maxLives ?? timedLives);
 
     return (
       <div className="mp-board">
         {rows.map((p) => {
           const lives = ts.lives[p.player_id] ?? 0;
-          const remaining = liveRemainingFor(p.player_id);
+          const remaining = ts.remaining[p.player_id] ?? 0;
           const out = isSurvival ? remaining <= 0 : lives <= 0;
           const holdingTurn =
             phase === "race" && !out && ts.current === p.player_id;
@@ -1638,13 +1731,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
                             0,
                             Math.min(100, (remaining / SURVIVAL_TIME) * 100),
                           )
-                        : Math.max(
-                            0,
-                            Math.min(
-                              100,
-                              (lives / Math.max(1, timedLives)) * 100,
-                            ),
-                          )
+                        : Math.max(0, Math.min(100, (lives / maxLives) * 100))
                     }%`,
                   }}
                 />
@@ -1669,7 +1756,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
   const goalText = isSurvival
     ? "one life each. 60 seconds total per player. turns auto-skip after 15 seconds."
     : isTimed
-      ? `last player standing wins. ${timedLives} lives each.`
+      ? `last player standing wins. ${ts?.maxLives ?? timedLives} lives each.`
       : game?.finish_mode === "last"
         ? mode === "alphabet"
           ? "everyone must collect all 26 letters"
