@@ -22,6 +22,7 @@ const NAME_KEY = "wordtimer_group_name";
 export const TARGET_WORDS = 20; // words needed to finish rush / sixrush
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 const ALPHABET_TARGET = ALPHABET.length; // 26 letters to finish alphabet
+const ROOM_CODE_LENGTH = 4;
 const TIMED_LIVES_DEFAULT = 3;
 const TIMED_LIFE_OPTIONS = [1, 2, 3, 4, 5];
 const TURN_TIME_OPTIONS = [5, 10, 20, 60];
@@ -350,9 +351,9 @@ function solveTimedTurn(
     base,
     prompts,
     holder,
-    `${nameOf(ts.current)} typed ${word}`,
+    base.note || `${nameOf(ts.current)} typed ${word}`,
     "timed",
-    nextLimit,
+    timedLimitFor(base),
   );
 }
 
@@ -410,15 +411,15 @@ function solveSurvivalTurn(
   present: Set<string>,
   nameOf: (id: string) => string,
 ): TurnState {
-  const remaining = {
-    ...ts.remaining,
-    [ts.current]: Math.max(
-      0,
-      (ts.remaining[ts.current] ?? 0) - turnElapsed(ts),
-    ),
-  };
+  const left = Math.max(0, (ts.remaining[ts.current] ?? 0) - turnElapsed(ts));
+  const remaining = { ...ts.remaining, [ts.current]: left };
+  const eliminated =
+    left <= 0 && !ts.eliminated.includes(ts.current)
+      ? [...ts.eliminated, ts.current]
+      : ts.eliminated;
+
   const base = recordAcceptedWord(
-    { ...ts, remaining },
+    { ...ts, remaining, eliminated },
     word,
     ts.current,
     nameOf,
@@ -581,10 +582,11 @@ function getPlayerId() {
   return id;
 }
 
+// 4 letters, no I or O so they can't be confused with 1 or 0.
 function makeRoomCode() {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ";
 
-  return Array.from(crypto.getRandomValues(new Uint8Array(6)))
+  return Array.from(crypto.getRandomValues(new Uint8Array(ROOM_CODE_LENGTH)))
     .map((v) => chars[v % chars.length])
     .join("");
 }
@@ -819,7 +821,16 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
           return;
         }
 
-        setGame(g);
+        // Ignore a stale poll that started before one of our own turn writes.
+        setGame((cur) =>
+          cur &&
+          cur.status === "playing" &&
+          g.status === "playing" &&
+          g.game_number === cur.game_number &&
+          g.turn_number < cur.turn_number
+            ? cur
+            : g,
+        );
         setPlayers(p);
         setSyncError("");
       } catch (e) {
@@ -954,7 +965,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     return () => window.clearInterval(id);
   }, [game?.status, game?.started_at, ts?.endedAt]);
 
-  // Timed: seconds left on the current turn.
+  // Timed: seconds left on the current turn (and until the survival skip).
   useEffect(() => {
     if (!isTimed || !ts || game?.status !== "playing") {
       setTurnLeft(0);
@@ -962,21 +973,20 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
       return;
     }
 
-    const deadline = new Date(
-      isSurvival ? ts.skipDeadline : ts.deadline,
-    ).getTime();
+    const turnStart = new Date(ts.turnStartedAt).getTime();
+    const skipAt = new Date(ts.skipDeadline).getTime();
+    const deadlineAt = new Date(ts.deadline).getTime();
+    const bank = ts.remaining[ts.current] ?? 0;
 
     const update = () => {
-      if (isSurvival) {
-        const playerRemaining = ts.remaining[ts.current] ?? 0;
-        const elapsed = Math.max(
-          0,
-          (Date.now() - new Date(ts.turnStartedAt).getTime()) / 1000,
-        );
-        setTurnLeft(Math.max(0, playerRemaining - elapsed));
-      } else {
-        setTurnLeft(Math.max(0, (deadline - Date.now()) / 1000));
-      }
+      const t = now();
+
+      setSkipLeft(Math.max(0, (skipAt - t) / 1000));
+      setTurnLeft(
+        isSurvival
+          ? Math.max(0, bank - Math.max(0, (t - turnStart) / 1000))
+          : Math.max(0, (deadlineAt - t) / 1000),
+      );
     };
 
     update();
@@ -984,7 +994,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     const id = window.setInterval(update, 100);
 
     return () => window.clearInterval(id);
-  }, [isTimed, ts?.skipDeadline, game?.status]);
+  }, [isTimed, isSurvival, game?.status, game?.turn_number, ts?.skipDeadline]);
 
   /* ------------------------------------------------------------------------
    * DERIVED DATA
@@ -1008,15 +1018,18 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
   const ranked = useMemo(
     () =>
       [...players].sort((a, b) => {
-        if (a.finished_at && b.finished_at) {
+        const aFinished = a.finished_at !== null;
+        const bFinished = b.finished_at !== null;
+
+        if (aFinished && bFinished) {
           return (
-            new Date(a.finished_at).getTime() -
-            new Date(b.finished_at).getTime()
+            new Date(a.finished_at!).getTime() -
+            new Date(b.finished_at!).getTime()
           );
         }
 
-        if (a.finished_at) return -1;
-        if (b.finished_at) return 1;
+        if (aFinished) return -1;
+        if (bFinished) return 1;
 
         return b.progress - a.progress;
       }),
@@ -1100,7 +1113,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
       return stored;
     }
 
-    return Math.max(0, stored - (Date.now() - started) / 1000);
+    return Math.max(0, stored - (now() - started) / 1000);
   };
 
   const myRemaining = liveRemainingFor(me);
@@ -1303,8 +1316,8 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
 
     const code = codeInput.trim().toUpperCase();
 
-    if (!/^[A-Z0-9]{6}$/.test(code)) {
-      setError("game codes are 6 letters or numbers.");
+    if (!new RegExp(`^[A-Z]{${ROOM_CODE_LENGTH}}$`).test(code)) {
+      setError(`game codes are ${ROOM_CODE_LENGTH} letters.`);
       return;
     }
 
@@ -1542,26 +1555,32 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
 
     const nextLetters = new Set(letters);
 
-    for (const char of word.toUpperCase()) nextLetters.add(char);
+    for (const char of word.toUpperCase()) {
+      nextLetters.add(char);
+    }
 
     const nextProgress = mode === "alphabet" ? nextLetters.size : nextIndex;
+    const justFinished = nextProgress >= target;
 
     setUsed((current) => {
       const updated = new Set(current);
-
       updated.add(word);
-
       return updated;
     });
 
     setIndex(nextIndex);
     setLetters(nextLetters);
     setInput("");
-    setMessage(nextProgress >= target ? "" : "good word!");
+    setMessage(justFinished ? "" : "good word!");
 
-    if (nextProgress >= target) {
-      queueSave(() => saveProgress(target));
-      queueSave(() => saveFinished(target));
+    if (justFinished) {
+      // Progress must be written BEFORE the finish RPC, otherwise the server
+      // sees progress < target and doesn't stamp finished_at. Running both on
+      // the save queue also stops older saves from landing afterwards.
+      queueSave(async () => {
+        await saveProgress(target);
+        await saveFinished(target);
+      });
     } else {
       queueSave(() => saveProgress(nextProgress));
     }
@@ -1694,7 +1713,9 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
       <div className="mp-board">
         {rows.map((p) => {
           const lives = ts.lives[p.player_id] ?? 0;
-          const remaining = ts.remaining[p.player_id] ?? 0;
+          const remaining = isSurvival
+            ? liveRemainingFor(p.player_id)
+            : (ts.remaining[p.player_id] ?? 0);
           const out = isSurvival ? remaining <= 0 : lives <= 0;
           const holdingTurn =
             phase === "race" && !out && ts.current === p.player_id;
@@ -1834,13 +1855,13 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
             <input
               className="group-input"
               value={codeInput}
-              maxLength={6}
+              maxLength={ROOM_CODE_LENGTH}
               onChange={(e) =>
                 setCodeInput(
-                  e.target.value.replace(/[^a-zA-Z0-9]/g, "").toUpperCase(),
+                  e.target.value.replace(/[^a-zA-Z]/g, "").toUpperCase(),
                 )
               }
-              placeholder="ABC123"
+              placeholder="ABCD"
               autoComplete="off"
             />
           </div>
@@ -1849,7 +1870,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
             type="button"
             className="play-again"
             onClick={handleJoin}
-            disabled={busy || codeInput.length !== 6}
+            disabled={busy || codeInput.length !== ROOM_CODE_LENGTH}
           >
             join game
           </button>
@@ -2198,6 +2219,8 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
       {/* ============ RACE (timed / hot potato) ============ */}
       {phase === "race" && isTimed && ts && (
         <div className="mp-race">
+          <div className="timer">{turnLeft.toFixed(1)}s</div>
+
           {isSurvival && (
             <div className="mp-survival-top">
               <strong>turn skips in {Math.ceil(skipLeft)}s</strong>
@@ -2207,7 +2230,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
           <div className="mp-last">
             {ts.lastWord ? (
               <>
-                <small>{nameOf(me)} typed</small>
+                <small>{nameOf(ts.lastWordBy)} typed</small>
                 <strong>{ts.lastWord}</strong>
               </>
             ) : (
@@ -2353,6 +2376,26 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
           )}
 
           {error && <div className="message">{error}</div>}
+        </div>
+      )}
+
+      {phase === "results" && !winner && (
+        <div className="mp-results">
+          <div className="results-header">
+            <small>game over</small>
+            <h2>no winner</h2>
+          </div>
+
+          {isHost && (
+            <button
+              type="button"
+              className="play-again"
+              onClick={handleBackToLobby}
+              disabled={busy}
+            >
+              back to lobby
+            </button>
+          )}
         </div>
       )}
     </section>
