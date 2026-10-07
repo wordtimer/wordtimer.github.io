@@ -311,15 +311,7 @@ function recordAcceptedWord(
   const lives = { ...ts.lives };
   let note = "";
 
-  if (
-    !ts.survival &&
-    after.length === ALPHABET_TARGET &&
-    (lives[playerId] ?? 0) > 0
-  ) {
-    lives[playerId] = Math.min(5, (lives[playerId] ?? 0) + 1);
-    after = [];
-    note = `${nameOf(playerId)} got an extra life`;
-  }
+
 
   letters[playerId] = after;
 
