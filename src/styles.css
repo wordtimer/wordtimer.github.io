@@ -1197,43 +1197,409 @@ label {
     font-size: 12px;
   }
 }
-/* Tighten multiplayer layout */
+/* ===== Multiplayer spacing fix: paste at END of stylesheet ===== */
+
+/* One spacing system: the container's gap. Children add no margins of their own. */
 .mp-screen {
-  padding-top: 12px;
-  padding-bottom: 12px;
+  padding: 14px 16px;
 }
 
 .mp-top {
-  margin-bottom: 6px;
+  margin-bottom: 10px;
 }
 
 .mp-menu,
 .mp-lobby,
 .mp-race,
 .mp-results {
-  gap: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
 
 .mp-screen h2,
 .mp-screen h3,
-.mp-screen p {
+.mp-screen p,
+.mp-screen .setting,
+.mp-screen .timer,
+.mp-screen .prompt,
+.mp-screen .rule,
+.mp-screen .section-heading,
+.mp-screen .results-header small {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+/* Dividers were 30px margins stacked on top of the gap and the prompt margins. */
+.mp-screen .divider {
+  margin: 4px 0;
+}
+
+.mp-screen .play-again {
+  margin-top: 0;
+}
+
+/* Header blocks */
+.mp-screen .results-header {
+  padding: 4px 0 8px;
+}
+
+.mp-screen .results-header h2 {
+  margin-top: 6px;
+}
+
+.mp-screen .results-header p {
+  margin-top: 6px;
+}
+
+.mp-results .results-header h2 {
+  font-size: clamp(26px, 8vw, 40px); /* 50px overflowed on long names */
+  overflow-wrap: anywhere;
+}
+
+.mp-code {
+  font-size: 2.4rem;
+  letter-spacing: 0.15em; /* was 0em */
+  padding-left: 0.15em; /* re-centers the trailing letter-space */
+  text-align: center;
+}
+
+/* Timer */
+.mp-screen .timer {
+  text-align: center;
+  line-height: 1.1;
+}
+
+/* Prompt */
+.mp-screen .prompt {
+  padding: 18px 0;
+}
+
+.mp-screen .prompt strong {
+  margin: 6px 0;
+  padding-left: 5px; /* offsets the trailing letter-spacing so it centers */
+}
+
+.mp-screen .prompt p {
   margin-top: 4px;
-  margin-bottom: 4px;
 }
 
-.mp-screen .group-panel {
-  margin-bottom: 8px;
-  padding: 10px;
+/* Messages: reserve space only inside the word form */
+.mp-screen .message {
+  height: auto;
+  min-height: 0;
+  margin: 0;
+  text-align: center;
 }
 
-.mp-screen .group-players {
+.mp-screen form .message {
+  min-height: 18px;
   margin-top: 8px;
 }
 
-.mp-screen .group-player {
-  padding: 6px 0;
+/* Stat lines ("words typed 12  game time 30.0s") */
+.mp-stats {
+  display: flex;
+  justify-content: center;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  margin: 0;
 }
 
-.mp-screen .stats {
-  margin-bottom: 4px;
+.mp-screen > .mp-stats {
+  margin-bottom: 10px;
+}
+
+.mp-stats strong {
+  margin-left: 0; /* JSX already puts a space before <strong> */
+}
+
+/* Scoreboard rows */
+.mp-board {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mp-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 24px;
+  font-size: 13px;
+}
+
+.mp-name {
+  flex: 0 0 120px;
+  min-width: 0;
+}
+
+.mp-bar {
+  flex: 1;
+  min-width: 40px;
+}
+
+.mp-bar > i {
+  background: #35b8a6; /* match the rest of the theme (was blue) */
+}
+
+.mp-count {
+  flex: 0 0 auto;
+  min-width: 64px; /* 48px clipped "♥♥♥♥♥" and "58.3s" */
+  white-space: nowrap;
+  text-align: right;
+}
+
+/* Alphabet row under timed board */
+.mp-screen .alphabet {
+  margin: 0;
+}
+
+@media (max-width: 600px) {
+  .mp-screen {
+    padding: 12px 10px;
+  }
+
+  .mp-menu,
+  .mp-lobby,
+  .mp-race,
+  .mp-results {
+    gap: 12px;
+  }
+
+  .mp-name {
+    flex-basis: 88px;
+  }
+
+  .mp-row {
+    gap: 8px;
+  }
+
+  .mp-count {
+    min-width: 56px;
+  }
+
+  .mp-screen .prompt strong {
+    padding-left: 3px;
+  }
+}
+/* =========================================================
+   MULTIPLAYER HOST SETTINGS
+   ========================================================= */
+
+.mp-lobby .setting {
+  width: 100%;
+  margin: 0;
+}
+
+.mp-lobby .setting > small {
+  display: block;
+  margin-bottom: 7px;
+}
+
+.mp-lobby .option-grid {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 8px;
+  width: 100%;
+}
+
+.mp-lobby .option {
+  width: 100%;
+  min-width: 0;
+  min-height: 58px;
+  padding: 10px 12px;
+}
+
+.mp-lobby .option strong {
+  display: block;
+  line-height: 1.2;
+}
+
+.mp-lobby .option span {
+  line-height: 1.25;
+}
+
+/* Lives / turn-time choices */
+.mp-lobby .time-options {
+  display: grid !important;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+}
+
+/* The 5 life buttons need 5 columns */
+.mp-lobby .setting:has(.time-options) .time-options {
+  grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
+}
+
+/* Survival rules box */
+.mp-lobby .setting > .option.selected {
+  width: 100%;
+}
+
+/* Keep the start button separated from the settings */
+.mp-lobby > .play-again {
+  margin-top: 2px;
+}
+
+/* =========================================================
+   SURVIVAL TOP STATUS
+   ========================================================= */
+
+.mp-survival-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 0;
+}
+
+.mp-survival-top small {
+  color: #999;
+  font-size: 11px;
+}
+
+.mp-survival-top strong {
+  color: #35b8a6;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Survival clock */
+.mp-survival-clock {
+  text-align: center;
+}
+
+.mp-survival-clock .timer {
+  margin-top: 0;
+}
+
+/* =========================================================
+   MOBILE
+   ========================================================= */
+
+@media (max-width: 600px) {
+  .mp-lobby .option-grid {
+    grid-template-columns: 1fr 1fr !important;
+  }
+
+  .mp-lobby .time-options {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .mp-lobby .setting:has(.time-options) .time-options {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+
+  .mp-lobby .option {
+    min-height: 54px;
+    padding: 9px;
+  }
+
+  .mp-survival-top {
+    padding: 5px 0;
+  }
+}
+/* =========================================================
+   SURVIVAL RACE
+   ========================================================= */
+
+.mp-survival-top {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  width: 100%;
+  padding: 0;
+  margin: 0;
+}
+
+.mp-survival-top strong {
+  color: #35b8a6;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Previous word */
+
+.mp-race .mp-last {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 52px;
+  padding: 8px 0;
+  text-align: center;
+}
+
+.mp-race .mp-last small {
+  margin-bottom: 3px;
+}
+
+.mp-race .mp-last strong {
+  color: #eee;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+/* Survival prompt */
+
+.mp-race .prompt {
+  margin: 8px 0 12px;
+  padding: 20px 0;
+}
+
+.mp-race .prompt strong {
+  font-size: clamp(48px, 12vw, 64px);
+  letter-spacing: 5px;
+}
+
+.mp-race .prompt p {
+  margin-top: 5px;
+}
+
+/* Input */
+
+.mp-race form {
+  margin-top: 0;
+}
+
+.mp-race .entry input {
+  height: 50px;
+  font-size: 18px;
+}
+
+.mp-race .entry button {
+  min-width: 75px;
+}
+
+/* Remove timer spacing completely */
+
+.mp-race .mp-survival-clock {
+  display: none;
+}
+
+@media (max-width: 600px) {
+  .mp-survival-top {
+    justify-content: flex-start;
+  }
+
+  .mp-race .mp-last {
+    min-height: 46px;
+  }
+
+  .mp-race .prompt {
+    margin: 4px 0 10px;
+    padding: 16px 0;
+  }
+
+  .mp-race .prompt strong {
+    font-size: clamp(42px, 13vw, 58px);
+    letter-spacing: 4px;
+  }
+
+  .mp-race .entry input {
+    height: 48px;
+    font-size: 17px;
+  }
 }

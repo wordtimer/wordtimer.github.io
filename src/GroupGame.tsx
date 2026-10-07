@@ -238,12 +238,13 @@ function recordAcceptedWord(
   ts: TurnState,
   word: string,
   playerId: string,
+  nameOf: (id: string) => string,
 ): TurnState {
   const letters = { ...ts.letters };
   const before = letters[playerId] ?? [];
   let after = addLetters(word, before);
   const lives = { ...ts.lives };
-  let note = `${word} typed by ${playerId}`;
+  let note = "";
 
   if (
     !ts.survival &&
@@ -252,7 +253,7 @@ function recordAcceptedWord(
   ) {
     lives[playerId] = Math.min(5, (lives[playerId] ?? 0) + 1);
     after = [];
-    note = `${word} typed by ${playerId} — ${playerId} got an extra life`;
+    note = `${nameOf(playerId)} got an extra life`;
   }
 
   letters[playerId] = after;
@@ -278,7 +279,7 @@ function solveTimedTurn(
   limit: number,
   shorten: boolean,
 ): TurnState {
-  const base = recordAcceptedWord(ts, word, ts.current);
+  const base = recordAcceptedWord(ts, word, ts.current, nameOf);
   const alive = aliveIds(base, present);
   const idx = ts.order.indexOf(ts.current);
   const holder = firstAliveFrom(ts.order, alive, idx + 1) ?? ts.current;
@@ -288,14 +289,7 @@ function solveTimedTurn(
       ? TIMED_SHORT_TIME_DEFAULT
       : limit;
 
-  return withNewFragment(
-    base,
-    prompts,
-    holder,
-    `${nameOf(ts.current)} typed ${word}`,
-    "timed",
-    nextLimit,
-  );
+  return withNewFragment(base, prompts, holder, base.note, "timed", nextLimit);
 }
 
 function failTimedTurn(
@@ -360,7 +354,12 @@ function solveSurvivalTurn(
     ...ts.remaining,
     [ts.current]: Math.max(0, (ts.remaining[ts.current] ?? 0) - elapsed),
   };
-  const base = recordAcceptedWord({ ...ts, remaining }, word, ts.current);
+  const base = recordAcceptedWord(
+    { ...ts, remaining },
+    word,
+    ts.current,
+    nameOf,
+  );
   const alive = aliveIds(base, present);
   const idx = ts.order.indexOf(ts.current);
   const holder = firstAliveFrom(ts.order, alive, idx + 1) ?? ts.current;
@@ -373,7 +372,7 @@ function solveSurvivalTurn(
     base,
     prompts,
     holder,
-    `${nameOf(ts.current)} typed ${word}`,
+    base.note,
     "survival",
     SURVIVAL_SKIP_SECONDS,
   );
@@ -673,6 +672,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
   const [raceTime, setRaceTime] = useState(0);
   const [gameElapsed, setGameElapsed] = useState(0);
   const [turnLeft, setTurnLeft] = useState(0); // timed: seconds left this turn
+  const [skipLeft, setSkipLeft] = useState(0); // survival only: seconds until 15s skip
 
   const [gamesPlayed, setGamesPlayed] = useState(0);
 
@@ -711,9 +711,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
 
   // Poll the room + players. Faster while a timed game is running.
   const pollMs =
-    game?.game_mode === "timed" && game.status === "playing"
-      ? TIMED_POLL_MS
-      : POLL_MS;
+    isTimed && game?.status === "playing" ? TIMED_POLL_MS : POLL_MS;
 
   useEffect(() => {
     if (!room) return;
@@ -869,27 +867,28 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     return () => window.clearInterval(id);
   }, [game?.status, game?.started_at, ts?.endedAt]);
 
-  // Timed: seconds left on the current turn.
+  // Timed: seconds left on the current turn (and the 15s skip clock in survival).
   useEffect(() => {
     if (!isTimed || !ts || game?.status !== "playing") {
       setTurnLeft(0);
+      setSkipLeft(0);
       return;
     }
 
-    const deadline = new Date(
-      isSurvival ? ts.skipDeadline : ts.deadline,
-    ).getTime();
+    const deadline = new Date(ts.deadline).getTime();
+    const skipDeadline = new Date(ts.skipDeadline).getTime();
+    const turnStart = new Date(ts.turnStartedAt).getTime();
+    const holderRemaining = ts.remaining[ts.current] ?? 0;
 
     const update = () => {
+      const now = Date.now();
+
       if (isSurvival) {
-        const playerRemaining = ts.remaining[ts.current] ?? 0;
-        const elapsed = Math.max(
-          0,
-          (Date.now() - new Date(ts.turnStartedAt).getTime()) / 1000,
-        );
-        setTurnLeft(Math.max(0, playerRemaining - elapsed));
+        setTurnLeft(Math.max(0, holderRemaining - (now - turnStart) / 1000));
+        setSkipLeft(Math.max(0, (skipDeadline - now) / 1000));
       } else {
-        setTurnLeft(Math.max(0, (deadline - Date.now()) / 1000));
+        setTurnLeft(Math.max(0, (deadline - now) / 1000));
+        setSkipLeft(0);
       }
     };
 
@@ -997,7 +996,29 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
   );
 
   const myLives = ts?.lives[me] ?? 0;
-  const myRemaining = ts?.remaining[me] ?? 0;
+
+  const liveRemainingFor = (playerId: string) => {
+    if (!ts || !isSurvival) {
+      return ts?.remaining[playerId] ?? 0;
+    }
+
+    const stored = ts.remaining[playerId] ?? 0;
+
+    if (ts.current !== playerId) {
+      return stored;
+    }
+
+    const started = new Date(ts.turnStartedAt).getTime();
+
+    if (!Number.isFinite(started)) {
+      return stored;
+    }
+
+    return Math.max(0, stored - (Date.now() - started) / 1000);
+  };
+
+  const myRemaining = liveRemainingFor(me);
+
   const myTurn =
     !!ts && ts.current === me && (isSurvival ? myRemaining > 0 : myLives > 0);
 
@@ -1580,7 +1601,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
       <div className="mp-board">
         {rows.map((p) => {
           const lives = ts.lives[p.player_id] ?? 0;
-          const remaining = ts.remaining[p.player_id] ?? 0;
+          const remaining = liveRemainingFor(p.player_id);
           const out = isSurvival ? remaining <= 0 : lives <= 0;
           const holdingTurn =
             phase === "race" && !out && ts.current === p.player_id;
@@ -1663,8 +1684,10 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
   return (
     <section className="card mp-screen">
       <div className="mp-stats">
-        total games played by all users{" "}
-        <strong>{gamesPlayed.toLocaleString()}</strong>
+        <span>
+          total games played by all users{" "}
+          <strong>{gamesPlayed.toLocaleString()}</strong>
+        </span>
       </div>
 
       <div className="mp-top">
@@ -1873,23 +1896,13 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
                     >
                       <strong>{shortenTimed ? "on" : "off"}</strong>
                       <span>
-                        after {players.length} ×{" "}
-                        {TIMED_SHORT_AFTER_WORDS_PER_PLAYER} prompts →{" "}
-                        {TIMED_SHORT_TIME_DEFAULT}s
+                        {`after ${players.length * TIMED_SHORT_AFTER_WORDS_PER_PLAYER} prompts → ${TIMED_SHORT_TIME_DEFAULT}s`}
                       </span>
                     </button>
                   </div>
                 </>
               ) : modeChoice === "survival" ? (
-                <div className="setting">
-                  <small>survival rules</small>
-                  <div className="option selected">
-                    <strong>60 seconds total</strong>
-                    <span>
-                      1 life · 15 seconds per turn · clock never resets
-                    </span>
-                  </div>
-                </div>
+                <div className="setting"></div>
               ) : (
                 <div className="setting">
                   <small>finish mode</small>
@@ -2016,16 +2029,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
       {/* ============ RACE (rush / sixrush / alphabet) ============ */}
       {phase === "race" && !isTimed && (
         <div className="mp-race">
-          <div
-            style={{
-              textAlign: "center",
-              fontSize: "22px",
-              fontWeight: 700,
-              marginBottom: "18px",
-            }}
-          >
-            {raceTime.toFixed(2)}s
-          </div>
+          <div className="timer">{raceTime.toFixed(2)}s</div>
 
           {iFinished ? (
             <div className="results-header">
@@ -2107,50 +2111,21 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
       {/* ============ RACE (timed / hot potato) ============ */}
       {phase === "race" && isTimed && ts && (
         <div className="mp-race">
-          <div
-            className={turnLeft <= 3 ? "timer danger" : "timer"}
-            style={{ textAlign: "center", marginBottom: "12px" }}
-          >
-            {turnLeft.toFixed(1)}s
-          </div>
+          {isSurvival && (
+            <div className="mp-survival-top">
+              <strong>turn skips in {Math.ceil(skipLeft)}s</strong>
+            </div>
+          )}
 
-          <div
-            style={{
-              textAlign: "center",
-              fontSize: "15px",
-              marginBottom: "12px",
-              fontWeight: 700,
-            }}
-          >
+          <div className="mp-last">
             {ts.lastWord ? (
               <>
-                <span
-                  style={{ display: "block", fontSize: "13px", opacity: 0.7 }}
-                >
-                  last word
-                </span>
-                <strong
-                  style={{
-                    display: "block",
-                    fontSize: "30px",
-                    marginTop: "4px",
-                  }}
-                >
-                  {ts.lastWord}
-                </strong>
+                <small>{nameOf(me)} typed</small>
+                <strong>{ts.lastWord}</strong>
               </>
             ) : (
-              "no words typed yet"
+              <small>no words typed yet</small>
             )}
-          </div>
-
-          <div className="mp-stats" style={{ marginBottom: "14px" }}>
-            <span>
-              words typed <strong>{ts.totalWords}</strong>
-            </span>
-            <span>
-              game time <strong>{gameElapsed.toFixed(1)}s</strong>
-            </span>
           </div>
 
           <div className="prompt">
@@ -2202,32 +2177,36 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
 
           {renderTimedBoard()}
 
-          <div className="divider" />
+          {!isSurvival && (
+            <>
+              <div className="divider" />
 
-          <div className="section-heading">
-            <div>
-              <small>alphabet bonus</small>
-              <h2>get a life</h2>
-            </div>
-            <strong>{(ts.letters[me] ?? []).length}/26</strong>
-          </div>
+              <div className="section-heading">
+                <div>
+                  <small>alphabet bonus</small>
+                  <h2>get a life</h2>
+                </div>
+                <strong>{(ts.letters[me] ?? []).length}/26</strong>
+              </div>
 
-          <div className="alphabet">
-            {ALPHABET.map((letter) => (
-              <span
-                className={
-                  (ts.letters[me] ?? []).includes(letter) ? "complete" : ""
-                }
-                key={letter}
-              >
-                {letter}
-              </span>
-            ))}
-          </div>
+              <div className="alphabet">
+                {ALPHABET.map((letter) => (
+                  <span
+                    className={
+                      (ts.letters[me] ?? []).includes(letter) ? "complete" : ""
+                    }
+                    key={letter}
+                  >
+                    {letter}
+                  </span>
+                ))}
+              </div>
 
-          <p className="rule">
-            collect all 26 letters from your words to gain an extra life.
-          </p>
+              <p className="rule">
+                collect all 26 letters from your words to gain an extra life.
+              </p>
+            </>
+          )}
 
           {syncError && <div className="message">{syncError}</div>}
         </div>
@@ -2257,7 +2236,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
           <div className="divider" />
 
           {isTimed && ts && (
-            <div className="mp-stats" style={{ marginBottom: "16px" }}>
+            <div className="mp-stats">
               <span>
                 total words <strong>{ts.totalWords}</strong>
               </span>
