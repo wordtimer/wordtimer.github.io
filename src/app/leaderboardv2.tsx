@@ -5,7 +5,7 @@ const SUPABASE_KEY = "sb_publishable_mB2ZU7RWDpQdPA-mIh8tKw_oxs1_2_B";
 const MAX_NAME_LENGTH = 15;
 
 export type RankedMode = "timed" | "rush" | "alphabet" | "sevenRush";
-export type Period = "alltime" | "weekly";
+export type Period = "alltime" | "daily";
 
 export type LeaderboardEntry = {
   name: string;
@@ -69,6 +69,7 @@ export async function wouldQualify(
     p_period: period,
   });
 }
+
 export type ScorePercentile = {
   percentile: number;
   total_scores: number;
@@ -89,6 +90,7 @@ export async function getScorePercentile(
 
   return rows[0] ?? null;
 }
+
 export async function fetchLeaderboard(
   mode: RankedMode,
   difficulty: string,
@@ -205,7 +207,7 @@ export function Leaderboard({
     <div className="leaderboard">
       <div className="section-heading">
         <div>
-          <small>{period === "weekly" ? "weekly" : "all-time"}</small>
+          <small>{period === "daily" ? "daily" : "all-time"}</small>
           <h2>
             {MODE_LABELS[mode]} - {DIFFICULTY_LABELS[difficulty] ?? difficulty}
           </h2>
@@ -254,7 +256,7 @@ type LeaderboardSubmitModalProps = {
   roundTime: number | null;
   score: number;
   qualifiesAllTime: boolean;
-  qualifiesWeekly: boolean;
+  qualifiesDaily: boolean;
   onSubmit: (name: string, color: string) => Promise<void> | void;
   onClose: () => void;
 };
@@ -265,7 +267,7 @@ export function LeaderboardSubmitModal({
   roundTime,
   score,
   qualifiesAllTime,
-  qualifiesWeekly,
+  qualifiesDaily,
   onSubmit,
   onClose,
 }: LeaderboardSubmitModalProps) {
@@ -322,10 +324,10 @@ export function LeaderboardSubmitModal({
         </p>
 
         <p className="rule">
-          {qualifiesAllTime && qualifiesWeekly
-            ? "your score qualifies for both all-time and weekly."
-            : qualifiesWeekly
-              ? "your score qualifies for the weekly leaderboard."
+          {qualifiesAllTime && qualifiesDaily
+            ? "your score qualifies for both all-time and daily."
+            : qualifiesDaily
+              ? "your score qualifies for the daily leaderboard."
               : "your score qualifies for the all-time leaderboard."}
         </p>
 

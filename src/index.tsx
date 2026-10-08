@@ -280,7 +280,7 @@ export default function App() {
     roundTime: number | null;
     score: number;
     allTime: boolean;
-    weekly: boolean;
+    daily: boolean;
   } | null>(null);
 
   const [boardRefresh, setBoardRefresh] = useState(0);
@@ -289,8 +289,8 @@ export default function App() {
 
   const [highlightRanks, setHighlightRanks] = useState<{
     alltime: number | null;
-    weekly: number | null;
-  }>({ alltime: null, weekly: null });
+    daily: number | null;
+  }>({ alltime: null, daily: null });
 
   const [roundTime, setRoundTime] = useState<number>(DEFAULT_TIME);
   const [timedLives, setTimedLives] = useState(DEFAULT_TIMED_LIVES);
@@ -598,7 +598,7 @@ export default function App() {
     runIdRef.current = crypto.randomUUID();
 
     setPendingRun(null);
-    setHighlightRanks({ alltime: null, weekly: null });
+    setHighlightRanks({ alltime: null, daily: null });
 
     const startingLives = timedLives;
 
@@ -655,18 +655,21 @@ export default function App() {
       color,
     );
 
-    const [allTimeRank, weeklyRank] = await Promise.all([
+    const [allTimeRank, dailyRank] = await Promise.all([
       pendingRun.allTime
         ? getRunRank(pendingRun.runId, "alltime").catch(() => null)
         : null,
-      pendingRun.weekly
-        ? getRunRank(pendingRun.runId, "weekly").catch(() => null)
+      pendingRun.daily
+        ? getRunRank(pendingRun.runId, "daily").catch(() => null)
         : null,
     ]);
 
     setGameMode(pendingRun.mode);
     setDifficulty(pendingRun.difficulty);
-    setHighlightRanks({ alltime: allTimeRank, weekly: weeklyRank });
+    setHighlightRanks({
+      alltime: allTimeRank,
+      daily: dailyRank,
+    });
     setBoardRefresh((n) => n + 1);
     setPendingRun(null);
   };
@@ -706,10 +709,10 @@ export default function App() {
 
     Promise.all([
       wouldQualify(gameMode, difficulty, roundTimeArg, finalScore, "alltime"),
-      wouldQualify(gameMode, difficulty, roundTimeArg, finalScore, "weekly"),
+      wouldQualify(gameMode, difficulty, roundTimeArg, finalScore, "daily"),
     ])
-      .then(async ([allTime, weekly]) => {
-        if (allTime || weekly) {
+      .then(async ([allTime, daily]) => {
+        if (allTime || daily) {
           setPendingRun({
             runId,
             mode: gameMode,
@@ -717,7 +720,7 @@ export default function App() {
             roundTime: roundTimeArg,
             score: finalScore,
             allTime,
-            weekly,
+            daily,
           });
 
           return;
@@ -1117,11 +1120,11 @@ export default function App() {
             </div>
 
             <div className="rules-section">
-              <strong>weekly leaderboard</strong>
+              <strong>daily leaderboard</strong>
 
               <p>
-                weekly scores reset every sunday at 11pm central. all-time
-                scores are kept.
+                daily scores reset every day at 11pm central. all-time scores
+                are kept.
               </p>
             </div>
           </div>
@@ -1206,12 +1209,12 @@ export default function App() {
               <button
                 type="button"
                 className={
-                  boardPeriod === "weekly" ? "option selected" : "option"
+                  boardPeriod === "daily" ? "option selected" : "option"
                 }
-                onClick={() => setBoardPeriod("weekly")}
+                onClick={() => setBoardPeriod("daily")}
               >
-                <strong>weekly</strong>
-                <span>resets sunday 11pm</span>
+                <strong>daily</strong>
+                <span>resets every day at 11pm</span>
               </button>
             </div>
 
@@ -1390,9 +1393,9 @@ export default function App() {
                   mode={gameMode}
                   difficulty={difficulty}
                   roundTime={gameMode === "timed" ? roundTime : null}
-                  period="weekly"
+                  period="daily"
                   refreshKey={boardRefresh}
-                  highlightRank={highlightRanks.weekly}
+                  highlightRank={highlightRanks.daily}
                 />
 
                 <div className="divider" />
@@ -1571,7 +1574,7 @@ export default function App() {
           roundTime={pendingRun.roundTime}
           score={pendingRun.score}
           qualifiesAllTime={pendingRun.allTime}
-          qualifiesWeekly={pendingRun.weekly}
+          qualifiesDaily={pendingRun.daily}
           onSubmit={handleLeaderboardSubmit}
           onClose={() => setPendingRun(null)}
         />
