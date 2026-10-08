@@ -549620,7 +549620,8 @@ type PromptData = {
 };
 
 // sixrush only uses fragments where at least this share of the difficulty's
-// word minimum comes from 6+ letter words (easy: 5000 * 0.5 = 2500, hard: 200 * 0.5 = 100)
+// word minimum comes from 6+ letter words
+// (easy: 5000 * 0.5 = 2500, hard: 300–900 * 0.5 = 150–450)
 const SEVEN_RUSH_LONG_RATIO = 0.5;
 
 function addExample(list: string[], word: string) {
@@ -549703,7 +549704,17 @@ function buildPromptPool(
 function pickPrompt(difficulty: Difficulty, mode?: GameMode) {
   const minimum =
     difficulty === "hard" ? getHardMinimum() : DIFFICULTY_LIMITS[difficulty];
-  const pool = buildPromptPool(difficulty, mode, minimum);
+
+  // If the pool is empty (e.g. sixrush on hard with a high random minimum),
+  // step the minimum down instead of falling straight to "in".
+  const minimumsToTry = [minimum, DIFFICULTY_LIMITS[difficulty], 100, 20, 1];
+
+  let pool: ReturnType<typeof buildPromptPool> = [];
+
+  for (const candidate of minimumsToTry) {
+    pool = buildPromptPool(difficulty, mode, candidate);
+    if (pool.length) break;
+  }
 
   if (!pool.length) {
     return {
@@ -549817,6 +549828,10 @@ export default function App() {
 
   const [promptExamples, setPromptExamples] = useState(initialPrompt.examples);
 
+  // bumps every time a new prompt is shown so the countdown restarts even if
+  // the same fragment and the same time value come up twice in a row
+  const [promptNonce, setPromptNonce] = useState(0);
+
   const [started, setStarted] = useState(false);
   const [input, setInput] = useState("");
 
@@ -549886,8 +549901,20 @@ export default function App() {
     return () => window.clearInterval(id);
   }, [gameOver, gameMode, rushStartTime]);
 
+  // countdown: ticks `time` down once per second in timed mode
   useEffect(() => {
-    if (gameOver || gameMode !== "timed" || time !== 0) {
+    if (!started || gameOver || gameMode !== "timed" || time <= 0) return;
+
+    const id = window.setTimeout(() => {
+      setTime((t) => Math.max(0, t - 1));
+    }, 1000);
+
+    return () => window.clearTimeout(id);
+  }, [started, gameOver, gameMode, time, promptNonce]);
+
+  // time ran out: lose a life, show what could have been played, move on
+  useEffect(() => {
+    if (!started || gameOver || gameMode !== "timed" || time !== 0) {
       return;
     }
 
@@ -549911,31 +549938,40 @@ export default function App() {
 
     setInput("");
 
-    setLives((current) => {
-      const next = current - 1;
+    const nextLives = lives - 1;
+    setLives(nextLives);
 
-      if (next <= 0) {
-        setGameOver(true);
-      }
-
-      return next;
-    });
+    if (nextLives <= 0) {
+      setGameOver(true);
+      return;
+    }
 
     const nextPrompt = pickPrompt(difficulty, gameMode);
 
     setPrompt(nextPrompt.fragment);
     setPromptExamples(nextPrompt.examples);
+    setPromptNonce((n) => n + 1);
 
     setTime(
-      gameMode === "timed" &&
-      shortenTimed &&
-      score >= TIMED_SHORT_AFTER_WORDS_PER_PLAYER
+      shortenTimed && score >= TIMED_SHORT_AFTER_WORDS_PER_PLAYER
         ? TIMED_SHORT_TIME
         : roundTime,
     );
 
     roundStartedAt.current = Date.now();
-  }, [time, gameOver, gameMode, prompt, promptExamples, difficulty, roundTime]);
+  }, [
+    started,
+    time,
+    gameOver,
+    gameMode,
+    prompt,
+    promptExamples,
+    difficulty,
+    roundTime,
+    lives,
+    score,
+    shortenTimed,
+  ]);
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -550028,6 +550064,7 @@ export default function App() {
 
     setPrompt(nextPrompt.fragment);
     setPromptExamples(nextPrompt.examples);
+    setPromptNonce((n) => n + 1);
 
     if (gameMode === "timed") {
       const nextTimedTime =
@@ -550042,9 +550079,12 @@ export default function App() {
     if (nextLetters.size === 26) {
       setLetters(new Set());
 
-      setLives((value) => value + 1);
-
-      setMessage("a–z complete! you gained a life.");
+      if (gameMode === "timed") {
+        setLives((value) => value + 1);
+        setMessage("a–z complete! you gained a life.");
+      } else {
+        setMessage("a–z complete!");
+      }
     } else {
       setLetters(nextLetters);
       setMessage("good word!");
@@ -550089,6 +550129,7 @@ export default function App() {
     const now = Date.now();
     setPrompt(nextPrompt.fragment);
     setPromptExamples(nextPrompt.examples);
+    setPromptNonce((n) => n + 1);
     setInput("");
     setLives(startingLives);
     setScore(0);
@@ -550318,7 +550359,18 @@ export default function App() {
     return () => {
       window.removeEventListener("keydown", handleSpacebar);
     };
-  }, [started, gameOver, showRules, showLeaderboard, pendingRun, screen]);
+  }, [
+    started,
+    gameOver,
+    showRules,
+    showLeaderboard,
+    pendingRun,
+    screen,
+    gameMode,
+    difficulty,
+    roundTime,
+    timedLives,
+  ]);
 
   const hearts = useMemo(() => "♥".repeat(Math.max(0, lives)), [lives]);
 
@@ -550426,7 +550478,8 @@ export default function App() {
       >
         <strong>{shortenTimed ? "on" : "off"}</strong>
         <span>
-          after {TIMED_SHORT_AFTER_WORDS_PER_PLAYER} prompts → {TIMED_SHORT_TIME}s
+          after {TIMED_SHORT_AFTER_WORDS_PER_PLAYER} prompts →{" "}
+          {TIMED_SHORT_TIME}s
         </span>
       </button>
     </div>
