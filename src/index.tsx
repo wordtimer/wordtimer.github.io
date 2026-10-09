@@ -733,7 +733,7 @@ export default function App() {
           roundTimeArg,
           finalScore,
           "anonymous",
-          "#4f8cff",
+          "#676767",
         );
 
         console.log("NON-QUALIFYING SCORE SAVED:", finalScore);
