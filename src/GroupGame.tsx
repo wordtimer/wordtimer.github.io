@@ -12,9 +12,9 @@ const PLAYERS_URL = `${SUPABASE_URL}/rest/v1/group_players`;
 const GAMES_URL = `${SUPABASE_URL}/rest/v1/group_games`;
 
 const COUNTER_URL =
-  "https://countapi.mileshilliard.com/api/v1/hit/word_bomb_solo_games_7f3c9"; // +1
+  "https://frnjbjhigceptzwtmyax.supabase.co/rest/v1/rpc/count_games_played"; // +1
 const COUNTER_GET_URL =
-  "https://countapi.mileshilliard.com/api/v1/get/word_bomb_solo_games_7f3c9"; // read only
+  "https://frnjbjhigceptzwtmyax.supabase.co/rest/v1/rpc/get_games_played"; // read only
 
 const PLAYER_ID_KEY = "wordtimer_group_player_id";
 const NAME_KEY = "wordtimer_group_name";
@@ -311,8 +311,6 @@ function recordAcceptedWord(
   const lives = { ...ts.lives };
   let note = "";
 
-
-
   letters[playerId] = after;
 
   return {
@@ -535,13 +533,12 @@ async function loadGamesPlayed(
   setGamesPlayed: Dispatch<SetStateAction<number>>,
 ) {
   try {
-    const response = await fetch(COUNTER_GET_URL);
+    const value = await request<number>(COUNTER_GET_URL, {
+      method: "POST",
+      body: "{}",
+    });
 
-    if (!response.ok) return;
-
-    const data = await response.json();
-
-    setGamesPlayed(Number(data.value) || 0);
+    setGamesPlayed(Number(value) || 0);
   } catch {
     // counter is cosmetic, ignore failures
   }
@@ -549,15 +546,15 @@ async function loadGamesPlayed(
 
 async function countGamePlayed(
   setGamesPlayed: Dispatch<SetStateAction<number>>,
+  amount = 1,
 ) {
   try {
-    const response = await fetch(COUNTER_URL);
+    const value = await request<number>(COUNTER_URL, {
+      method: "POST",
+      body: JSON.stringify({ p_amount: amount }),
+    });
 
-    if (!response.ok) return;
-
-    const data = await response.json();
-
-    setGamesPlayed(Number(data.value) || 0);
+    setGamesPlayed(Number(value) || 0);
   } catch {
     // counter is cosmetic, ignore failures
   }

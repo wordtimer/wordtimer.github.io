@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Dispatch,
+  SetStateAction,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { DICTIONARY, MODERN_WORDS } from "../assets/dict";
 import {
   Leaderboard,
@@ -25,36 +32,53 @@ const TIMED_LIFE_OPTIONS = [1, 2, 3, 4, 5];
 const TIMED_SHORT_TIME = 5;
 const TIMED_SHORT_AFTER_WORDS_PER_PLAYER = 20;
 
-const COUNTER_URL =
-  "https://countapi.mileshilliard.com/api/v1/hit/word_bomb_solo_games_7f3c9";
+const SUPABASE_URL = "https://frnjbjhigceptzwtmyax.supabase.co";
+const SUPABASE_KEY = "sb_publishable_mB2ZU7RWDpQdPA-mIh8tKw_oxs1_2_B";
 
-const COUNTER_GET_URL =
-  "https://countapi.mileshilliard.com/api/v1/get/word_bomb_solo_games_7f3c9";
+const COUNTER_GET_URL = `${SUPABASE_URL}/rest/v1/rpc/get_games_played`;
+const COUNTER_HIT_URL = `${SUPABASE_URL}/rest/v1/rpc/count_games_played`;
+
+async function callCounter(url: string, body: object): Promise<number | null> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${SUPABASE_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) return null;
+
+  const value = Number(await response.json());
+
+  return Number.isFinite(value) ? value : null;
+}
 
 async function loadGamesPlayed(
-  setGamesPlayed: React.Dispatch<React.SetStateAction<number>>,
+  setGamesPlayed: Dispatch<SetStateAction<number>>,
 ) {
   try {
-    const response = await fetch(COUNTER_GET_URL);
+    const value = await callCounter(COUNTER_GET_URL, {});
 
-    if (!response.ok) return;
-
-    const data = await response.json();
-    setGamesPlayed(Number(data.value) || 0);
-  } catch {}
+    if (value !== null) setGamesPlayed(value);
+  } catch {
+    // counter is cosmetic, ignore failures
+  }
 }
 
 async function countGamePlayed(
-  setGamesPlayed: React.Dispatch<React.SetStateAction<number>>,
+  setGamesPlayed: Dispatch<SetStateAction<number>>,
+  amount = 1,
 ) {
   try {
-    const response = await fetch(COUNTER_URL);
+    const value = await callCounter(COUNTER_HIT_URL, { p_amount: amount });
 
-    if (!response.ok) return;
-
-    const data = await response.json();
-    setGamesPlayed(Number(data.value) || 0);
-  } catch {}
+    if (value !== null) setGamesPlayed(value);
+  } catch {
+    // counter is cosmetic, ignore failures
+  }
 }
 
 type Difficulty = "superEasy" | "hard";
