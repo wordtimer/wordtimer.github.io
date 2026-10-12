@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Dispatch,
+  SetStateAction,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { DICTIONARY, MODERN_WORDS } from "../assets/dict";
 import {
   Leaderboard,
@@ -14,9 +21,6 @@ import {
 import GroupGame, { type GroupDifficulty, type PromptItem } from "./GroupGame";
 import "./styles.css";
 
-// KEEP your existing import lines at the very top of your file (react hooks,
-// DICTIONARY, Leaderboard, submitScore, etc.) and add this one:
-
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
 const DEFAULT_TIME = 10;
@@ -25,54 +29,88 @@ const TIMED_LIFE_OPTIONS = [1, 2, 3, 4, 5];
 const TIMED_SHORT_TIME = 5;
 const TIMED_SHORT_AFTER_WORDS_PER_PLAYER = 20;
 
-const COUNTER_URL =
-  "https://countapi.mileshilliard.com/api/v1/hit/word_bomb_solo_games_7f3c9";
+const SUPABASE_KEY = "sb_publishable_mB2ZU7RWDpQdPA-mIh8tKw_oxs1_2_B";
 
+// Games-played counter. Both are Supabase RPC functions called with POST.
 const COUNTER_GET_URL =
-  "https://countapi.mileshilliard.com/api/v1/get/word_bomb_solo_games_7f3c9";
+  "https://frnjbjhigceptzwtmyax.supabase.co/rest/v1/rpc/get_games_played"; // read only
+const COUNTER_HIT_URL =
+  "https://frnjbjhigceptzwtmyax.supabase.co/rest/v1/rpc/count_games_played"; // adds p_amount
 
-async function loadGamesPlayed(
-  setGamesPlayed: React.Dispatch<React.SetStateAction<number>>,
-) {
-  try {
-    const response = await fetch(COUNTER_GET_URL);
+// callCounter(url, body): takes an RPC URL and a JSON body object, returns a
+// Promise of the counter total as a number, or null if anything went wrong.
+// It POSTs the body with the Supabase auth headers. If the response is not OK
+// it returns null. Otherwise it reads the JSON (the RPC returns a bare number),
+// converts it with Number(), and returns it only if it is a finite number.
+// Both counter functions below go through this.
+async function callCounter(url: string, body: object): Promise<number | null> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${SUPABASE_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
 
-    if (!response.ok) return;
+  if (!response.ok) return null;
 
-    const data = await response.json();
-    setGamesPlayed(Number(data.value) || 0);
-  } catch {}
+  const value = Number(await response.json());
+
+  return Number.isFinite(value) ? value : null;
 }
 
-async function countGamePlayed(
-  setGamesPlayed: React.Dispatch<React.SetStateAction<number>>,
+// loadGamesPlayed(setGamesPlayed): takes the state setter for the games-played
+// number, returns a Promise that resolves to nothing. Calls the get_games_played
+// RPC with an empty body and stores the total, but only if a number came back.
+// Errors are ignored on purpose because the counter is only cosmetic.
+async function loadGamesPlayed(
+  setGamesPlayed: Dispatch<SetStateAction<number>>,
 ) {
   try {
-    const response = await fetch(COUNTER_URL);
+    const value = await callCounter(COUNTER_GET_URL, {});
 
-    if (!response.ok) return;
+    if (value !== null) setGamesPlayed(value);
+  } catch { }
+}
 
-    const data = await response.json();
-    setGamesPlayed(Number(data.value) || 0);
-  } catch {}
+// countGamePlayed(setGamesPlayed, amount = 1): takes the state setter and how
+// many games to add (default 1), returns a Promise that resolves to nothing.
+// Calls the count_games_played RPC with { p_amount: amount }, which adds that
+// number on the server and returns the new total, then stores the total if a
+// number came back. Errors are ignored because the counter is cosmetic.
+async function countGamePlayed(
+  setGamesPlayed: Dispatch<SetStateAction<number>>,
+  amount = 1,
+) {
+  try {
+    const value = await callCounter(COUNTER_HIT_URL, { p_amount: amount });
+
+    if (value !== null) setGamesPlayed(value);
+  } catch { }
 }
 
 type Difficulty = "superEasy" | "hard";
 type GameMode = "timed" | "zen" | "rush" | "alphabet" | "sevenRush";
 
+// Minimum number of dictionary words that must contain a fragment.
 const DIFFICULTY_LIMITS: Record<Difficulty, number> = {
   superEasy: 5000,
-  hard: 300,
+  hard: 500,
 };
 
-function getHardMinimum() {
-  return Math.floor(Math.random() * (900 - 300 + 1)) + 300;
-}
+// Maximum number of words that may contain a fragment. Easy has no cap; hard
+// caps at 2500 so very common fragments are excluded.
+const DIFFICULTY_MAX: Record<Difficulty, number> = {
+  superEasy: Infinity,
+  hard: 2500,
+};
 
 const DIFFICULTY_OPTIONS: { value: Difficulty; label: string; hint: string }[] =
   [
     { value: "superEasy", label: "easy", hint: "5,000+ words" },
-    { value: "hard", label: "hard", hint: "300–900+ words" },
+    { value: "hard", label: "hard", hint: "500–2,500 words" },
   ];
 
 const MODE_OPTIONS: { value: GameMode; label: string; hint: string }[] = [
@@ -85,6 +123,9 @@ const MODE_OPTIONS: { value: GameMode; label: string; hint: string }[] = [
 
 const TIME_OPTIONS = [5, 10, 20, 60];
 
+// isRushMode(mode): takes a GameMode, returns true for rush, alphabet and
+// sevenRush, the modes scored by total elapsed time instead of word count. The
+// UI uses it to decide between showing a stopwatch and a score.
 function isRushMode(mode: GameMode) {
   return mode === "rush" || mode === "alphabet" || mode === "sevenRush";
 }
@@ -98,15 +139,26 @@ type PromptData = {
 
 // sixrush only uses fragments where at least this share of the difficulty's
 // word minimum comes from 6+ letter words
-// (easy: 5000 * 0.5 = 2500, hard: 300–900 * 0.5 = 150–450)
+// (easy: 5000 * 0.5 = 2500, hard: 500 * 0.5 = 250)
 const SEVEN_RUSH_LONG_RATIO = 0.5;
 
+// addExample(list, word): takes a string array of example answers and a
+// candidate word, returns nothing (it changes `list` directly). Pushes the word
+// only if the list has fewer than 12 entries and no existing example starts
+// with the same first letter, which keeps hints varied.
 function addExample(list: string[], word: string) {
   if (list.length < 12 && !list.some((example) => example[0] === word[0])) {
     list.push(word);
   }
 }
 
+// buildPromptData(): takes nothing, returns a Map from fragment string to a
+// PromptData object. It loops over every unique word in DICTIONARY and
+// MODERN_WORDS (skipping words under 2 letters), slices out every 2-letter and
+// 3-letter substring (a Set per word stops a fragment being counted twice in
+// one word), and for each fragment records: how many words contain it (count),
+// how many of those have 6+ letters (longCount), and example words (examples,
+// longExamples). Runs once at startup to create PROMPT_DATA.
 function buildPromptData() {
   const data = new Map<string, PromptData>();
 
@@ -152,18 +204,27 @@ function buildPromptData() {
 
 const PROMPT_DATA = buildPromptData();
 
+// buildPromptPool(difficulty, mode?, minimumOverride?): takes a difficulty, an
+// optional game mode, and an optional replacement minimum. Returns an array of
+// {fragment, count, examples}. It keeps fragments from PROMPT_DATA that appear
+// in at least `minimum` words (the override, or DIFFICULTY_LIMITS for the
+// difficulty) and in no more than DIFFICULTY_MAX words (so hard, capped at
+// 2500, excludes very common fragments). In sixrush mode it also requires
+// longCount of at least half the minimum and at least one long example, and
+// swaps in the long counts and examples.
 function buildPromptPool(
   difficulty: Difficulty,
   mode?: GameMode,
   minimumOverride?: number,
 ) {
   const minimum = minimumOverride ?? DIFFICULTY_LIMITS[difficulty];
+  const maximum = DIFFICULTY_MAX[difficulty];
   const sevenRush = mode === "sevenRush";
   const longMinimum = Math.ceil(minimum * SEVEN_RUSH_LONG_RATIO);
 
   return [...PROMPT_DATA.entries()]
     .filter(([, data]) => {
-      if (data.count < minimum) return false;
+      if (data.count < minimum || data.count > maximum) return false;
 
       if (sevenRush) {
         return data.longCount >= longMinimum && data.longExamples.length > 0;
@@ -178,13 +239,20 @@ function buildPromptPool(
     }));
 }
 
+// pickPrompt(difficulty, mode?): takes a difficulty and an optional mode,
+// returns {fragment, examples}. It builds the pool for the difficulty's minimum
+// (and maximum), and if that pool is empty it retries with lower minimums (100,
+// 20, 1) while keeping the maximum. If everything fails it returns the fallback
+// "in". Hard then picks one fragment uniformly at random, with no weighting.
+// Easy weights each fragment by min(20, max(1, floor(count / 100))), meaning
+// common fragments appear up to 20 times in a list, and picks randomly from
+// that weighted list.
 function pickPrompt(difficulty: Difficulty, mode?: GameMode) {
-  const minimum =
-    difficulty === "hard" ? getHardMinimum() : DIFFICULTY_LIMITS[difficulty];
+  const minimum = DIFFICULTY_LIMITS[difficulty];
 
-  // If the pool is empty (e.g. sixrush on hard with a high random minimum),
-  // step the minimum down instead of falling straight to "in".
-  const minimumsToTry = [minimum, DIFFICULTY_LIMITS[difficulty], 100, 20, 1];
+  // If the pool is empty (e.g. sixrush on hard), step the minimum down instead
+  // of falling straight to "in".
+  const minimumsToTry = [minimum, 100, 20, 1];
 
   let pool: ReturnType<typeof buildPromptPool> = [];
 
@@ -200,6 +268,10 @@ function pickPrompt(difficulty: Difficulty, mode?: GameMode) {
     };
   }
 
+  if (difficulty === "hard") {
+    return pool[Math.floor(Math.random() * pool.length)];
+  }
+
   const weightedPool: typeof pool = [];
 
   for (const item of pool) {
@@ -213,6 +285,13 @@ function pickPrompt(difficulty: Difficulty, mode?: GameMode) {
   return weightedPool[Math.floor(Math.random() * weightedPool.length)];
 }
 
+// makeGroupPrompts(count, difficulty): takes how many prompts to make and a
+// GroupDifficulty, returns an array of PromptItem. Calls pickPrompt repeatedly
+// and skips fragments already chosen so players get distinct letters. A guard
+// counter stops the first loop after count x 20 tries if unique fragments run
+// out, and a second loop fills any remaining slots with repeats. It is passed to
+// GroupGame as `makePrompts`. It does not pass a mode, so multiplayer sixrush
+// uses the normal pool.
 function makeGroupPrompts(count: number, difficulty: GroupDifficulty) {
   const seen = new Set<string>();
   const out: PromptItem[] = [];
@@ -233,6 +312,10 @@ function makeGroupPrompts(count: number, difficulty: GroupDifficulty) {
   return out;
 }
 
+// logPromptPools(): takes nothing, returns nothing. Debug helper exposed as
+// window.logPromptPools(). For every difficulty and for rush versus sixrush it
+// builds the prompt pool with the base minimum and prints a console table of how
+// many fragments qualify, which shows whether a pool is too small.
 // paste in the browser console via window.logPromptPools() to see pool sizes
 function logPromptPools() {
   const modes: GameMode[] = ["rush", "sevenRush"];
@@ -256,6 +339,10 @@ if (typeof window !== "undefined") {
     logPromptPools;
 }
 
+// getRandomExamples(examples): takes a string array, returns a new string array
+// of at most 2. If there are 2 or fewer it returns a copy of all of them;
+// otherwise it shuffles a copy with a random sort and takes the first two. Used
+// for the "you could have put X or Y" message after a missed prompt.
 function getRandomExamples(examples: string[]) {
   if (examples.length <= 2) {
     return [...examples];
@@ -266,6 +353,11 @@ function getRandomExamples(examples: string[]) {
   return shuffled.slice(0, 2);
 }
 
+// App(): the whole solo game, takes no props, returns JSX. It holds all game
+// state (mode, difficulty, prompt, score, timers, modals, leaderboard data) and
+// renders one of three views: the start screen, the active game, or the results
+// screen. The multiplayer screen is a separate component (GroupGame) that this
+// one swaps in when `screen` is "group".
 export default function App() {
   const [screen, setScreen] = useState<"solo" | "group">("solo");
   const [difficulty, setDifficulty] = useState<Difficulty>("superEasy");
@@ -327,8 +419,6 @@ export default function App() {
   const [gamesPlayed, setGamesPlayed] = useState(0);
   const [showRules, setShowRules] = useState(false);
 
-  const countedInitialGame = useRef(false);
-
   const [time, setTime] = useState(DEFAULT_TIME);
 
   const [used, setUsed] = useState<Set<string>>(new Set());
@@ -352,10 +442,17 @@ export default function App() {
     }[]
   >([]);
 
+  // Effect 1, games-played counter. Runs once on mount (empty dependency list).
+  // Calls loadGamesPlayed so the header shows the global total. No cleanup.
   useEffect(() => {
     loadGamesPlayed(setGamesPlayed);
   }, []);
 
+  // Effect 2, stopwatch for rush, sixrush and alphabet. Re-runs when gameOver,
+  // gameMode or rushStartTime changes. Does nothing if the game is over, the
+  // mode isn't one of those three, or rushStartTime is null. Otherwise it sets
+  // rushElapsed to (Date.now() - rushStartTime) / 1000, once right away and then
+  // every 100 ms. Cleanup clears the interval.
   useEffect(() => {
     if (
       gameOver ||
@@ -378,6 +475,13 @@ export default function App() {
     return () => window.clearInterval(id);
   }, [gameOver, gameMode, rushStartTime]);
 
+  // Effect 3, per-word countdown (timed mode). Re-runs when started, gameOver,
+  // gameMode, time or promptNonce changes. Does nothing if the game hasn't
+  // started, is over, isn't timed, or time is 0 or below. Otherwise it schedules
+  // one 1000 ms timeout that lowers `time` by one (never below 0). That change
+  // re-runs the effect, which schedules the next tick. promptNonce is a
+  // dependency so the countdown restarts when a new prompt appears even if
+  // `time` is the same. Cleanup clears the timeout.
   // countdown: ticks `time` down once per second in timed mode
   useEffect(() => {
     if (!started || gameOver || gameMode !== "timed" || time <= 0) return;
@@ -389,6 +493,15 @@ export default function App() {
     return () => window.clearTimeout(id);
   }, [started, gameOver, gameMode, time, promptNonce]);
 
+  // Effect 4, time ran out (timed mode). Re-runs when any of started, time,
+  // gameOver, gameMode, prompt, promptExamples, difficulty, roundTime, lives,
+  // score or shortenTimed changes. Does nothing unless the game is running in
+  // timed mode and `time` is exactly 0. Then it records the missed prompt with
+  // two example words (getRandomExamples) and shows "you could have put X or
+  // Y" (or "time's up!" with no examples), clears the input, and takes a life.
+  // At 0 lives it sets gameOver and stops. Otherwise it picks a new prompt,
+  // bumps promptNonce, resets `time` (5 seconds if the speed-up is on and score
+  // is 20 or more, otherwise roundTime), and restarts roundStartedAt. No cleanup.
   // time ran out: lose a life, show what could have been played, move on
   useEffect(() => {
     if (!started || gameOver || gameMode !== "timed" || time !== 0) {
@@ -450,6 +563,17 @@ export default function App() {
     shortenTimed,
   ]);
 
+  // submit(event): takes a form event, returns nothing. The enter-key handler.
+  // Does nothing if the game is over. It validates the lowercased, trimmed word
+  // in order: minimum length (6 in sixrush, otherwise prompt length + 1),
+  // letters only, present in a dictionary, contains the fragment, not already
+  // used; the first failure sets a message and stops. On success it records the
+  // answer time, adds the word to the used set, collects its letters, and adds 1
+  // to the score. It then checks mode end conditions: 10 words for rush and
+  // sixrush, 26 letters for alphabet (both save rushTotalTime and set gameOver).
+  // If the game continues it picks the next prompt, bumps promptNonce, resets the
+  // timed clock, restarts roundStartedAt, and when all 26 letters are collected
+  // clears them (and gives an extra life in timed mode).
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
 
@@ -568,6 +692,10 @@ export default function App() {
     }
   };
 
+  // goToStart(): takes nothing, returns nothing. Called when the title is
+  // clicked. Turns off started and gameOver and clears the message, input, used
+  // words, collected letters, score and the rush timers, so the start screen
+  // shows with a clean slate.
   const goToStart = () => {
     setStarted(false);
     setGameOver(false);
@@ -582,16 +710,30 @@ export default function App() {
     setRushStartTime(null);
   };
 
+  // finishGame(): takes nothing, returns nothing. Sets gameOver to true, but only
+  // in zen mode and only if the game isn't already over. Zen has no timer or
+  // lives, so this button is the only way to end a zen run.
   const finishGame = () => {
     if (gameMode !== "zen" || gameOver) return;
 
     setGameOver(true);
   };
 
+  // focusWordInput(): takes nothing, returns nothing. Waits one tick with
+  // setTimeout so the input exists after React has rendered, then calls focus()
+  // on the element stored in wordInputRef.
   const focusWordInput = () => {
     window.setTimeout(() => wordInputRef.current?.focus(), 0);
   };
 
+  // startGame(): takes nothing, returns nothing. Begins a new run with the
+  // current settings. Bumps the global counter, creates a new runIdRef UUID for
+  // the leaderboard, and clears pendingRun and highlightRanks. Picks the first
+  // prompt and resets input, lives (to timedLives), score, rush values, used
+  // words, letters, answer times, missed prompts and the message. Sets the clock
+  // to roundTime for timed mode (0 otherwise), sets gameOver false and started
+  // true, records roundStartedAt, focuses the input, and for rush-style modes
+  // saves rushStartTime so the stopwatch effect runs.
   const startGame = () => {
     countGamePlayed(setGamesPlayed);
 
@@ -642,6 +784,14 @@ export default function App() {
     }
   };
 
+  // handleLeaderboardSubmit(name, color): takes the player's chosen name and
+  // colour, returns a Promise that resolves to nothing. Does nothing if there is
+  // no pendingRun. Saves the pending run with submitScore, then fetches its
+  // all-time and daily ranks in parallel (only for boards it qualified for;
+  // errors become null). Finally it switches gameMode and difficulty to the
+  // run's values, stores the ranks in highlightRanks so the matching rows are
+  // highlighted, bumps boardRefresh so the boards reload, and clears pendingRun
+  // to close the modal.
   const handleLeaderboardSubmit = async (name: string, color: string) => {
     if (!pendingRun) return;
 
@@ -674,11 +824,24 @@ export default function App() {
     setPendingRun(null);
   };
 
+  // reset(): takes nothing, returns nothing. Calls startGame() and then
+  // focusWordInput(). Used by the restart (⟳) and play-again buttons.
   const reset = () => {
     startGame();
     focusWordInput();
   };
 
+  // Effect 5, qualify for the leaderboard (ranked games). Re-runs when gameOver,
+  // started, gameMode, difficulty, roundTime, score or rushTotalTime changes.
+  // Does nothing unless the game is over, started and in a ranked mode (not
+  // zen), there is a run id, and (for rush-style modes) rushTotalTime is set.
+  // Clears runIdRef so it runs only once per game, then computes the final score
+  // (rounded milliseconds for rush modes, word count for timed) and the
+  // round-time argument (only for timed). Asks wouldQualify about the all-time
+  // and daily boards in parallel. If either qualifies it sets pendingRun, which
+  // opens the name modal. If neither does, it saves the score as "anonymous"
+  // with colour #676767 so percentiles stay accurate. Errors are logged. No
+  // cleanup.
   useEffect(() => {
     if (
       !gameOver ||
@@ -751,6 +914,13 @@ export default function App() {
     rushTotalTime,
   ]);
 
+  // Effect 6, percentile (ranked games). Same dependencies as effect 5. Does
+  // nothing unless the game is over, started and ranked, and (for rush-style
+  // modes) rushTotalTime is set. Computes the same final score, sets
+  // percentileLoading and clears the old percentile, then calls
+  // getScorePercentile. On success it stores percentile and percentileTotal (or
+  // clears them if the result is empty). On failure it logs the error and clears
+  // both. percentileLoading is reset either way. No cleanup.
   useEffect(() => {
     if (
       !gameOver ||
@@ -810,6 +980,15 @@ export default function App() {
     rushTotalTime,
   ]);
 
+  // Effect 7, spacebar starts or restarts a game. Re-runs when started,
+  // gameOver, showRules, showLeaderboard, pendingRun, screen, gameMode,
+  // difficulty, roundTime or timedLives changes (the long list keeps
+  // handleSpacebar from seeing stale settings). Does nothing unless screen is
+  // "solo". Adds a keydown listener on window. On Space (not a held key), if no
+  // rules/leaderboard modal or submit modal is open and focus isn't in an input,
+  // textarea, select, button or editable element, and the game isn't running, it
+  // prevents the page from scrolling and calls startGame(). The credits modal is
+  // not part of the modal check. Cleanup removes the listener.
   useEffect(() => {
     if (screen !== "solo") return;
 
@@ -852,14 +1031,24 @@ export default function App() {
     timedLives,
   ]);
 
+  // hearts: a string such as "♥♥♥" built from `lives` (minimum zero hearts),
+  // memoized so it only recomputes when lives changes.
   const hearts = useMemo(() => "♥".repeat(Math.max(0, lives)), [lives]);
 
+  // averageTime: the mean of answerTimes in seconds, or 0 if none were answered.
   const averageTime =
     answerTimes.length > 0
       ? answerTimes.reduce((sum, value) => sum + value, 0) / answerTimes.length
       : 0;
 
+  // renderDifficulty(): takes nothing, returns JSX. Draws the difficulty picker:
+  // maps over DIFFICULTY_OPTIONS to make one button each, highlights the
+  // selected one, and calls setDifficulty on click. It is a function so the
+  // start screen and results screen can both reuse it.
   const renderDifficulty = () => (
+    // DIFFICULTY PICKER: a "difficulty" label above a 2-column grid with two
+    // buttons (easy: 5,000+ words / hard: 500–2,500 words). The selected one is
+    // highlighted.
     <div className="setting">
       <small>difficulty</small>
 
@@ -876,6 +1065,7 @@ export default function App() {
             }
             onClick={() => setDifficulty(option.value)}
           >
+            {/* Button text: the option name in bold, with a small hint line under it */}
             <strong>{option.label}</strong>
             <span>{option.hint}</span>
           </button>
@@ -884,10 +1074,19 @@ export default function App() {
     </div>
   );
 
+  // renderMode(): takes nothing, returns JSX. Draws the mode picker and the
+  // multiplayer button. Buttons sit on a six-column grid; the first two span
+  // three columns and the rest span two, giving a wide top row and a narrower
+  // second row. Clicking a mode calls setGameMode; the multiplayer button calls
+  // setScreen("group").
   const renderMode = () => (
+    // MODE PICKER: a "mode" label, then a grid of mode buttons (rush, sixrush,
+    // timed, alphabet, zen), then a full-width multiplayer button.
     <div className="setting">
       <small>mode</small>
 
+      {/* 6-column grid: rush and sixrush take the wide top row (3 columns each),
+          timed / alphabet / zen share the second row (2 columns each) */}
       <div
         className="option-grid mode-options"
         style={{
@@ -905,12 +1104,14 @@ export default function App() {
             className={gameMode === option.value ? "option selected" : "option"}
             onClick={() => setGameMode(option.value)}
           >
+            {/* Mode name in bold with a short description under it */}
             <strong>{option.label}</strong>
             <span>{option.hint}</span>
           </button>
         ))}
       </div>
 
+      {/* Multiplayer button: leaves the solo screen and opens the group game */}
       <button
         type="button"
         className="option group-mode-button"
@@ -922,7 +1123,13 @@ export default function App() {
     </div>
   );
 
+  // renderTimedLives(): takes nothing, returns JSX. Draws the lives picker (1 to
+  // 5) for timed mode. Clicking a number sets timedLives and also switches the
+  // mode to timed, since the setting only matters there. Highlighted when timed
+  // mode is active and that number is chosen.
   const renderTimedLives = () => (
+    // LIVES PICKER (timed mode only): a "lives" label with one button per option
+    // (1–5), each showing the number and a heart.
     <div className="setting">
       <small>lives</small>
       <div className="option-grid time-options">
@@ -948,7 +1155,12 @@ export default function App() {
     </div>
   );
 
+  // renderTimedSpeedup(): takes nothing, returns JSX. Draws the on/off toggle
+  // for the timed-mode speed-up. Clicking it flips shortenTimed, which controls
+  // whether the per-word time drops to 5 seconds after 20 prompts.
   const renderTimedSpeedup = () => (
+    // SPEED-UP TOGGLE (timed mode only): a single button showing "on" or "off"
+    // and the rule it controls ("after 20 prompts → 5s"). Highlighted when on.
     <div className="setting">
       <small>speed up after</small>
       <button
@@ -965,7 +1177,13 @@ export default function App() {
     </div>
   );
 
+  // renderTime(): takes nothing, returns JSX. Draws the seconds-per-word picker
+  // (5, 10, 20, 60) for timed mode. Choosing a value sets roundTime and also
+  // switches the mode to timed.
   const renderTime = () => (
+    // TIME-PER-WORD PICKER (timed mode only): a "time per word" label with one
+    // button per duration. Highlighted when timed mode is active and that
+    // duration is selected.
     <div className="setting">
       <small>time per word</small>
 
@@ -991,16 +1209,22 @@ export default function App() {
     </div>
   );
 
+  // MULTIPLAYER SCREEN: when the player picks multiplayer, the solo UI is
+  // replaced by just the header (clickable title that returns to solo) and the
+  // GroupGame component.
   if (screen === "group") {
     return (
       <main>
         <header>
+          {/* Title "WORDTIMER BETA" (click to go back to the solo screen) */}
           <div className="game-title" onClick={() => setScreen("solo")}>
             <b>WORDTIMER</b>
             <span> BETA</span>
           </div>
         </header>
 
+        {/* The multiplayer game: menu, lobby, countdown, race and results all
+            live inside this component */}
         <GroupGame
           onExit={() => setScreen("solo")}
           makePrompts={makeGroupPrompts}
@@ -1010,30 +1234,41 @@ export default function App() {
     );
   }
 
+  // SOLO SCREEN: everything below is the normal single-player UI.
   return (
     <main>
+      {/* HEADER BAR: the title on the left, live stats on the right */}
       <header>
+        {/* Title "WORDTIMER BETA". Clicking it resets everything and returns to
+            the start screen */}
         <div className="game-title" onClick={goToStart}>
           <b>WORDTIMER</b>
           <span> BETA</span>
         </div>
 
+        {/* Stats row shown in the header */}
         <div className="stats">
+          {/* Global counter: total games played by all users, with thousands
+              separators (always visible) */}
           <span>
             total games played by all users{" "}
             <strong>{gamesPlayed.toLocaleString()}</strong>
           </span>
 
+          {/* The stats below only appear once a game has started */}
           {started && (
             <>
+              {/* Current score (number of correct words this run) */}
               <span>
                 score <strong>{score}</strong>
               </span>
 
+              {/* Timed mode only: remaining lives as a row of hearts ("—" if none) */}
               {gameMode === "timed" && (
                 <span className="lives">{hearts || "—"}</span>
               )}
 
+              {/* Rush / sixrush / alphabet only: live stopwatch with one decimal */}
               {isRushMode(gameMode) && (
                 <span className="timer2">{rushElapsed.toFixed(1)}s</span>
               )}
@@ -1042,12 +1277,16 @@ export default function App() {
         </div>
       </header>
 
+      {/* RULES MODAL (shown when the "?" button is pressed): a dark overlay with
+          a centred card. Clicking the overlay closes it; clicking inside the card
+          does not (stopPropagation). */}
       {showRules && (
         <div className="rules-overlay" onClick={() => setShowRules(false)}>
           <div
             className="rules-modal"
             onClick={(event) => event.stopPropagation()}
           >
+            {/* Close (×) button in the corner of the modal */}
             <button
               type="button"
               className="rules-close"
@@ -1056,16 +1295,20 @@ export default function App() {
               ×
             </button>
 
+            {/* Modal heading: small "how to play" label and the title */}
             <small>how to play</small>
 
             <h2>rules & instructions</h2>
 
+            {/* General rule: find a word containing the fragment, longer than it,
+                in the dictionary, no repeats */}
             <p>
               find a word containing the letters/substring shown on screen. your
               word must be at least 1 letter longer than the fragment. words
               must be in the dictionary and cannot be repeated.
             </p>
 
+            {/* Rules for timed mode (per-word clock, lives, A–Z bonus life, speed-up) */}
             <div className="rules-section">
               <strong>timed</strong>
 
@@ -1077,6 +1320,7 @@ export default function App() {
               </p>
             </div>
 
+            {/* Rules for rush mode (10 words, fastest total time) */}
             <div className="rules-section">
               <strong>rush</strong>
 
@@ -1086,6 +1330,7 @@ export default function App() {
               </p>
             </div>
 
+            {/* Rules for sixrush mode (rush, but every word must be 6+ letters) */}
             <div className="rules-section">
               <strong>sixrush</strong>
 
@@ -1095,12 +1340,14 @@ export default function App() {
               </p>
             </div>
 
+            {/* Rules for alphabet mode (keep going until all 26 letters are used) */}
             <div className="rules-section">
               <strong>alphabet</strong>
 
               <p>keep filling in words until you get all 26 letters</p>
             </div>
 
+            {/* Rules for zen mode (no timer, no lives, not ranked) */}
             <div className="rules-section">
               <strong>zen</strong>
 
@@ -1110,6 +1357,7 @@ export default function App() {
               </p>
             </div>
 
+            {/* Rules for multiplayer (share a code, same letters, first to 20 wins) */}
             <div className="rules-section">
               <strong>BETA multiplayer</strong>
 
@@ -1119,6 +1367,7 @@ export default function App() {
               </p>
             </div>
 
+            {/* Explains when the daily leaderboard resets */}
             <div className="rules-section">
               <strong>daily leaderboard</strong>
 
@@ -1130,12 +1379,15 @@ export default function App() {
           </div>
         </div>
       )}
+      {/* CREDITS MODAL (opened from the "credits" button on the start screen):
+          same overlay + card pattern as the rules modal. */}
       {showCredits && (
         <div className="rules-overlay" onClick={() => setShowCredits(false)}>
           <div
             className="rules-modal"
             onClick={(event) => event.stopPropagation()}
           >
+            {/* Close (×) button */}
             <button
               type="button"
               className="rules-close"
@@ -1146,11 +1398,13 @@ export default function App() {
 
             <h2>credits</h2>
 
+            {/* The creator's name */}
             <div className="rules-section">
               <strong>created by</strong>
               <p>Bryce Wan</p>
             </div>
 
+            {/* Names of the lead playtesters */}
             <div className="rules-section">
               <strong>lead playtesters</strong>
               <p>
@@ -1159,6 +1413,7 @@ export default function App() {
               </p>
             </div>
 
+            {/* Names of the other playtesters */}
             <div className="rules-section">
               <strong>playtesters</strong>
               <p>
@@ -1171,6 +1426,9 @@ export default function App() {
           </div>
         </div>
       )}
+      {/* LEADERBOARD MODAL (opened from "view leaderboard" on the start screen):
+          lets the player browse the top scores for the currently selected mode and
+          difficulty. */}
       {showLeaderboard && (
         <div
           className="rules-overlay"
@@ -1180,6 +1438,7 @@ export default function App() {
             className="rules-modal"
             onClick={(event) => event.stopPropagation()}
           >
+            {/* Close (×) button */}
             <button
               type="button"
               className="rules-close"
@@ -1192,6 +1451,7 @@ export default function App() {
 
             <h2>view leaderboard</h2>
 
+            {/* Period tabs: switch between the all-time and daily boards */}
             <div
               className="option-grid"
               style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)" }}
@@ -1218,6 +1478,8 @@ export default function App() {
               </button>
             </div>
 
+            {/* Board contents: zen mode shows a "not ranked" notice, any other
+                mode shows the leaderboard table for the chosen period */}
             {gameMode === "zen" ? (
               <p>
                 zen mode isn't ranked. pick another mode to view its
@@ -1236,9 +1498,13 @@ export default function App() {
         </div>
       )}
 
+      {/* MAIN CARD: the big central panel. It shows one of three views depending
+          on state: START SCREEN (not started), RESULTS SCREEN (game over), or the
+          ACTIVE GAME (otherwise). */}
       <section className="card">
         {!started ? (
           <div className="start-screen">
+            {/* START SCREEN: intro heading explaining the game */}
             <div className="results-header">
               <small>how to play</small>
 
@@ -1249,7 +1515,9 @@ export default function App() {
 
             <div className="divider" />
 
+            {/* New-game settings: difficulty, mode and (for timed) extra options */}
             <div className="new-game-settings">
+              {/* Section title with a "?" button that opens the rules modal */}
               <div className="settings-title">
                 <small>new game</small>
 
@@ -1265,10 +1533,13 @@ export default function App() {
                 </h2>
               </div>
 
+              {/* Difficulty buttons (easy / hard) */}
               {renderDifficulty()}
 
+              {/* Mode buttons plus the multiplayer button */}
               {renderMode()}
 
+              {/* Timed-only settings: time per word, lives, and the speed-up toggle */}
               {gameMode === "timed" && (
                 <>
                   {renderTime()}
@@ -1277,6 +1548,7 @@ export default function App() {
                 </>
               )}
 
+              {/* Main call-to-action: starts the game (spacebar also works) */}
               <button
                 type="button"
                 className="play-again start-button"
@@ -1285,6 +1557,7 @@ export default function App() {
                 start game (space)
               </button>
 
+              {/* Opens the leaderboard modal */}
               <button
                 type="button"
                 className="lb-skip"
@@ -1292,6 +1565,7 @@ export default function App() {
               >
                 view leaderboard
               </button>
+              {/* Opens the credits modal */}
               <button
                 type="button"
                 className="lb-skip"
@@ -1303,24 +1577,32 @@ export default function App() {
           </div>
         ) : gameOver ? (
           <div className="results-screen">
+            {/* RESULTS SCREEN: headline result. The small label says "run
+                complete" for rush-style/zen modes or "game over" for timed. */}
             <div className="results-header">
               <small>
                 {gameMode === "zen" ||
-                gameMode === "rush" ||
-                gameMode === "alphabet" ||
-                gameMode === "sevenRush"
+                  gameMode === "rush" ||
+                  gameMode === "alphabet" ||
+                  gameMode === "sevenRush"
                   ? "run complete"
                   : "game over"}
               </small>
 
+              {/* Big number: final time in seconds (rush-style) or final word count */}
               <h2>
                 {isRushMode(gameMode) ? rushTotalTime?.toFixed(2) : score}
               </h2>
 
+              {/* Unit label under the big number */}
               <p>{isRushMode(gameMode) ? "seconds" : "words this run"}</p>
             </div>
 
+            {/* Row of stat boxes summarising the run */}
             <div className="final-stats">
+              {/* Percentile box (ranked modes only): "calculating...", then
+                  "better than X% of runs" with the sample size, or a message if
+                  there aren't enough scores yet */}
               {gameMode !== "zen" && isRankedMode(gameMode) && (
                 <div className="percentile-box">
                   <small>your performance</small>
@@ -1341,6 +1623,7 @@ export default function App() {
                   )}
                 </div>
               )}
+              {/* Average seconds per correct answer ("—" if none were answered) */}
               <div className="stat-box">
                 <small>average time</small>
 
@@ -1349,12 +1632,14 @@ export default function App() {
                 </strong>
               </div>
 
+              {/* How many prompts were answered correctly */}
               <div className="stat-box">
                 <small>answered</small>
 
                 <strong>{answerTimes.length}</strong>
               </div>
 
+              {/* How many prompts were missed (timed mode runs out of time) */}
               <div className="stat-box">
                 <small>missed</small>
 
@@ -1362,6 +1647,8 @@ export default function App() {
               </div>
             </div>
 
+            {/* Missed prompts list: each row shows the fragment in caps and two
+                words that would have worked */}
             {missedPrompts.length > 0 && (
               <div className="missed">
                 <small>missed prompts</small>
@@ -1381,14 +1668,19 @@ export default function App() {
               </div>
             )}
 
+            {/* Shown instead of the list when nothing was missed */}
             {missedPrompts.length === 0 && (
               <p className="no-missed">no missed prompts!</p>
             )}
 
             <div className="divider" />
 
+            {/* Leaderboards for this mode (ranked modes only): the daily board
+                first, then the all-time board. The player's own rank is
+                highlighted if they just submitted a score. */}
             {gameMode !== "zen" && isRankedMode(gameMode) && (
               <>
+                {/* Daily leaderboard */}
                 <Leaderboard
                   mode={gameMode}
                   difficulty={difficulty}
@@ -1400,6 +1692,7 @@ export default function App() {
 
                 <div className="divider" />
 
+                {/* All-time leaderboard */}
                 <Leaderboard
                   mode={gameMode}
                   difficulty={difficulty}
@@ -1413,6 +1706,8 @@ export default function App() {
               </>
             )}
 
+            {/* New-game settings again, so the player can change options and
+                play another round straight from the results screen */}
             <div className="new-game-settings">
               <div className="settings-title">
                 <small>new game</small>
@@ -1422,6 +1717,7 @@ export default function App() {
 
               {renderDifficulty()}
 
+              {/* Timed-only settings */}
               {gameMode === "timed" && (
                 <>
                   {renderTime()}
@@ -1432,6 +1728,7 @@ export default function App() {
 
               {renderMode()}
 
+              {/* Play-again button; its label changes with the selected mode */}
               <button type="button" className="play-again" onClick={reset}>
                 {gameMode === "rush"
                   ? "run again (space)"
@@ -1447,8 +1744,11 @@ export default function App() {
           </div>
         ) : (
           <>
+            {/* ACTIVE GAME: top row with the mode's main indicator on the left
+                and a restart button on the right */}
             <div className="top">
               <div>
+                {/* Small label naming the current mode ("TIME LEFT" for timed) */}
                 <small>
                   {gameMode === "rush"
                     ? "RUSH"
@@ -1461,23 +1761,28 @@ export default function App() {
                           : "TIME LEFT"}
                 </small>
 
+                {/* Timed: seconds left for this word (turns red at 3s or less) */}
                 {gameMode === "timed" && (
                   <div className={time <= 3 ? "timer danger" : "timer"}>
                     {time}s
                   </div>
                 )}
 
+                {/* Zen: an infinity symbol since there's no timer */}
                 {gameMode === "zen" && <div className="timer">∞</div>}
 
+                {/* Rush / sixrush: words completed out of 10 */}
                 {(gameMode === "rush" || gameMode === "sevenRush") && (
                   <div className="timer">{rushWords}/10</div>
                 )}
 
+                {/* Alphabet: letters collected out of 26 */}
                 {gameMode === "alphabet" && (
                   <div className="timer">{letters.size}/26</div>
                 )}
               </div>
 
+              {/* Restart button (⟳): starts a fresh game with the same settings */}
               <button
                 type="button"
                 className="restart-button"
@@ -1489,6 +1794,8 @@ export default function App() {
               </button>
             </div>
 
+            {/* PROMPT: the big letter fragment the player must use, in capitals,
+                with an instruction line under it */}
             <div className="prompt">
               <small>USE THESE LETTERS</small>
 
@@ -1497,9 +1804,11 @@ export default function App() {
               <p>put these letters in order anywhere in your word</p>
             </div>
 
+            {/* ANSWER FORM: pressing enter or clicking the button submits the word */}
             <form onSubmit={submit}>
               <label htmlFor="word">your word</label>
 
+              {/* Text box (letters only, auto-lowercased) and the enter button */}
               <div className="entry">
                 <input
                   id="word"
@@ -1519,8 +1828,11 @@ export default function App() {
                 <button type="submit">enter</button>
               </div>
 
+              {/* Feedback line: "good word!", validation errors, or the missed-
+                  prompt hint */}
               <div className="message">{message}</div>
 
+              {/* Zen only: button to end the run, since zen has no timer or lives */}
               {gameMode === "zen" && (
                 <button
                   type="button"
@@ -1534,10 +1846,13 @@ export default function App() {
           </>
         )}
 
+        {/* ALPHABET TRACKER (timed and alphabet modes, during and after the
+            game): shows which of the 26 letters have been collected so far */}
         {started && (gameMode === "timed" || gameMode === "alphabet") && (
           <>
             <div className="divider" />
 
+            {/* Section heading with the collected count (e.g. 12/26) on the right */}
             <div className="section-heading">
               <div>
                 <small>get more lives</small>
@@ -1548,6 +1863,7 @@ export default function App() {
               <strong>{letters.size}/26</strong>
             </div>
 
+            {/* A–Z grid; collected letters get the "complete" style */}
             <div className="alphabet">
               {ALPHABET.map((letter) => (
                 <span
@@ -1559,6 +1875,7 @@ export default function App() {
               ))}
             </div>
 
+            {/* Explanation of the extra-life rule */}
             <p className="rule">
               every letter in a correct word is collected. collect all 26
               letters to get an extra life.
@@ -1567,6 +1884,9 @@ export default function App() {
         )}
       </section>
 
+      {/* LEADERBOARD SUBMIT MODAL: appears after a ranked run that qualifies for
+          the daily and/or all-time board. The player enters a name and colour to
+          save their score; it shows the mode, difficulty and score being saved. */}
       {pendingRun && (
         <LeaderboardSubmitModal
           mode={pendingRun.mode}
