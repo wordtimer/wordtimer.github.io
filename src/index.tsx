@@ -1,11 +1,4 @@
-import {
-  Dispatch,
-  SetStateAction,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { DICTIONARY, MODERN_WORDS } from "../assets/dict";
 import {
   Leaderboard,
@@ -29,75 +22,42 @@ const TIMED_LIFE_OPTIONS = [1, 2, 3, 4, 5];
 const TIMED_SHORT_TIME = 5;
 const TIMED_SHORT_AFTER_WORDS_PER_PLAYER = 20;
 
-const SUPABASE_URL = "https://frnjbjhigceptzwtmyax.supabase.co";
-const SUPABASE_KEY = "sb_publishable_mB2ZU7RWDpQdPA-mIh8tKw_oxs1_2_B";
+const COUNTER_URL =
+  "https://countapi.mileshilliard.com/api/v1/hit/word_bomb_solo_games_7f3c9";
 
-const COUNTER_GET_URL = `${SUPABASE_URL}/rest/v1/rpc/get_games_played`;
-const COUNTER_HIT_URL = `${SUPABASE_URL}/rest/v1/rpc/count_games_played`;
-
-async function callCounter(url: string, body: object): Promise<number | null> {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      apikey: SUPABASE_KEY,
-      Authorization: `Bearer ${SUPABASE_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (!response.ok) return null;
-
-  const value = Number(await response.json());
-
-  return Number.isFinite(value) ? value : null;
-}
+const COUNTER_GET_URL =
+  "https://countapi.mileshilliard.com/api/v1/get/word_bomb_solo_games_7f3c9";
 
 // Reads the global "games played" total from the counter API and stores it in
 // state. It does a GET, parses the JSON, and uses data.value as a number.
 // Errors are ignored on purpose because the counter is only cosmetic.
 async function loadGamesPlayed(
-  setGamesPlayed: Dispatch<SetStateAction<number>>,
+  setGamesPlayed: React.Dispatch<React.SetStateAction<number>>,
 ) {
   try {
-    const value = await callCounter(COUNTER_GET_URL, {});
+    const response = await fetch(COUNTER_GET_URL);
 
-<<<<<<< HEAD
     if (!response.ok) return;
 
     const data = await response.json();
     setGamesPlayed(Number(data.value) || 0);
   } catch { }
-=======
-    if (value !== null) setGamesPlayed(value);
-  } catch {
-    // counter is cosmetic, ignore failures
-  }
->>>>>>> 6c0391b9b0252b7f5ef07609f04cd2f6e1089566
 }
 
 // Adds one to the global "games played" counter. The "hit" endpoint
 // increments the count and returns the new total, which is shown in the header.
 // Failures are ignored because the counter is cosmetic.
 async function countGamePlayed(
-  setGamesPlayed: Dispatch<SetStateAction<number>>,
-  amount = 1,
+  setGamesPlayed: React.Dispatch<React.SetStateAction<number>>,
 ) {
   try {
-    const value = await callCounter(COUNTER_HIT_URL, { p_amount: amount });
+    const response = await fetch(COUNTER_URL);
 
-<<<<<<< HEAD
     if (!response.ok) return;
 
     const data = await response.json();
     setGamesPlayed(Number(data.value) || 0);
   } catch { }
-=======
-    if (value !== null) setGamesPlayed(value);
-  } catch {
-    // counter is cosmetic, ignore failures
-  }
->>>>>>> 6c0391b9b0252b7f5ef07609f04cd2f6e1089566
 }
 
 type Difficulty = "superEasy" | "hard";

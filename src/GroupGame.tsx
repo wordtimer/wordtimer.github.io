@@ -8,15 +8,9 @@ const PLAYERS_URL = `${SUPABASE_URL}/rest/v1/group_players`;
 const GAMES_URL = `${SUPABASE_URL}/rest/v1/group_games`;
 
 const COUNTER_URL =
-<<<<<<< HEAD
   "https://countapi.mileshilliard.com/api/v1/hit/word_bomb_solo_games_7f3c9";
 const COUNTER_GET_URL =
   "https://countapi.mileshilliard.com/api/v1/get/word_bomb_solo_games_7f3c9";
-=======
-  "https://frnjbjhigceptzwtmyax.supabase.co/rest/v1/rpc/count_games_played"; // +1
-const COUNTER_GET_URL =
-  "https://frnjbjhigceptzwtmyax.supabase.co/rest/v1/rpc/get_games_played"; // read only
->>>>>>> 6c0391b9b0252b7f5ef07609f04cd2f6e1089566
 
 const PLAYER_ID_KEY = "wordtimer_group_player_id";
 const NAME_KEY = "wordtimer_group_name";
@@ -323,16 +317,7 @@ function recordAcceptedWord(
   playerId: string,
 ): TurnState {
   const letters = { ...ts.letters };
-<<<<<<< HEAD
   letters[playerId] = addLetters(word, letters[playerId] ?? []);
-=======
-  const before = letters[playerId] ?? [];
-  let after = addLetters(word, before);
-  const lives = { ...ts.lives };
-  let note = "";
-
-  letters[playerId] = after;
->>>>>>> 6c0391b9b0252b7f5ef07609f04cd2f6e1089566
 
   return {
     ...ts,
@@ -575,24 +560,14 @@ async function loadGamesPlayed(
   setGamesPlayed: Dispatch<SetStateAction<number>>,
 ) {
   try {
-    const value = await request<number>(COUNTER_GET_URL, {
-      method: "POST",
-      body: "{}",
-    });
+    const response = await fetch(COUNTER_GET_URL);
 
-<<<<<<< HEAD
     if (!response.ok) return;
 
     const data = await response.json();
 
     setGamesPlayed(Number(data.value) || 0);
   } catch { }
-=======
-    setGamesPlayed(Number(value) || 0);
-  } catch {
-    // counter is cosmetic, ignore failures
-  }
->>>>>>> 6c0391b9b0252b7f5ef07609f04cd2f6e1089566
 }
 
 // Adds one to the global games-played counter. The hit endpoint increments
@@ -600,27 +575,16 @@ async function loadGamesPlayed(
 // ignored because the counter is cosmetic.
 async function countGamePlayed(
   setGamesPlayed: Dispatch<SetStateAction<number>>,
-  amount = 1,
 ) {
   try {
-    const value = await request<number>(COUNTER_URL, {
-      method: "POST",
-      body: JSON.stringify({ p_amount: amount }),
-    });
+    const response = await fetch(COUNTER_URL);
 
-<<<<<<< HEAD
     if (!response.ok) return;
 
     const data = await response.json();
 
     setGamesPlayed(Number(data.value) || 0);
   } catch { }
-=======
-    setGamesPlayed(Number(value) || 0);
-  } catch {
-    // counter is cosmetic, ignore failures
-  }
->>>>>>> 6c0391b9b0252b7f5ef07609f04cd2f6e1089566
 }
 
 // Returns this browser's permanent player id. It reads a UUID from
