@@ -1,6 +1,10 @@
 import type { Dispatch, FormEvent, SetStateAction } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+/* ==========================================================================
+ * CONFIG / CONSTANTS
+ * ========================================================================== */
+
 const SUPABASE_URL = "https://frnjbjhigceptzwtmyax.supabase.co";
 const SUPABASE_KEY = "sb_publishable_mB2ZU7RWDpQdPA-mIh8tKw_oxs1_2_B";
 
@@ -8,16 +12,16 @@ const PLAYERS_URL = `${SUPABASE_URL}/rest/v1/group_players`;
 const GAMES_URL = `${SUPABASE_URL}/rest/v1/group_games`;
 
 const COUNTER_URL =
-  "https://countapi.mileshilliard.com/api/v1/hit/word_bomb_solo_games_7f3c9";
+  "https://countapi.mileshilliard.com/api/v1/hit/word_bomb_solo_games_7f3c9"; // +1
 const COUNTER_GET_URL =
-  "https://countapi.mileshilliard.com/api/v1/get/word_bomb_solo_games_7f3c9";
+  "https://countapi.mileshilliard.com/api/v1/get/word_bomb_solo_games_7f3c9"; // read only
 
 const PLAYER_ID_KEY = "wordtimer_group_player_id";
 const NAME_KEY = "wordtimer_group_name";
 
-export const TARGET_WORDS = 20;
+export const TARGET_WORDS = 20; // words needed to finish rush / sixrush
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
-const ALPHABET_TARGET = ALPHABET.length;
+const ALPHABET_TARGET = ALPHABET.length; // 26 letters to finish alphabet
 const ROOM_CODE_LENGTH = 4;
 const TIMED_LIVES_DEFAULT = 3;
 const TIMED_LIFE_OPTIONS = [1, 2, 3, 4, 5];
@@ -26,33 +30,29 @@ const SURVIVAL_TIME = 60;
 const SURVIVAL_SKIP_SECONDS = 15;
 const TIMED_SHORT_TIME_DEFAULT = 5;
 const TIMED_SHORT_AFTER_WORDS_PER_PLAYER = 20;
-const PROMPT_POOL_SIZE = 60;
+const PROMPT_POOL_SIZE = 60; // fragments generated for alphabet / timed (they wrap)
 const MIN_PLAYERS = 2;
-const MAX_PLAYERS = 16;
+const MAX_PLAYERS = 8;
 const MAX_NAME_LENGTH = 15;
 const POLL_MS = 1000;
-const TIMED_POLL_MS = 500;
+const TIMED_POLL_MS = 500; // poll faster during timed so the potato moves quickly
 const COUNTDOWN_SECONDS = 3;
-const TIMEOUT_GRACE_MS = 300;
-const BACKUP_GRACE_MS = 2000;
+const TIMEOUT_GRACE_MS = 300; // host waits a hair past the deadline before failing a turn
+const BACKUP_GRACE_MS = 2000; // non-host clients step in if the host is stalled
 
-let clockOffset = 0;
+/* ==========================================================================
+ * SHARED CLOCK
+ * Every device estimates (serverTime - localTime) and uses now() instead of
+ * Date.now(), so deadlines written by one device mean the same thing on all.
+ * Requires the server_now() SQL function (see notes).
+ * ========================================================================== */
+
+let clockOffset = 0; // serverNow - localNow, in ms
 let bestSample = { rtt: Infinity, at: 0 };
 
-// Returns the current time in milliseconds on the shared clock. It is the
-// device's Date.now() plus the measured offset from the server, so every
-// player's deadlines line up even if their own clocks are wrong.
 const now = () => Date.now() + clockOffset;
-
-// Same as now(), but formatted as an ISO timestamp string, which is the
-// format the database stores.
 const nowIso = () => new Date(now()).toISOString();
 
-// Measures how far this device's clock is from the server's. For each sample
-// it calls the server_now function, times the round trip, and assumes the
-// server read its clock halfway through, so offset = server - midpoint. It
-// keeps the sample with the lowest round-trip time (the most accurate one) and
-// replaces it after two minutes. If a request fails, the local clock is used.
 async function syncClock(samples = 1) {
   for (let i = 0; i < samples; i++) {
     const t0 = Date.now();
@@ -78,16 +78,24 @@ async function syncClock(samples = 1) {
 
       const rtt = t1 - t0;
 
+      // keep the lowest-latency sample, but let old samples expire
       if (rtt <= bestSample.rtt || t1 - bestSample.at > 120_000) {
         bestSample = { rtt, at: t1 };
         clockOffset = server - (t0 + t1) / 2;
       }
-    } catch { }
+    } catch {
+      // falls back to the local clock
+    }
   }
 }
 
+/* ==========================================================================
+ * TYPES
+ * ========================================================================== */
+
 export type GroupDifficulty = "superEasy" | "hard";
 
+// rush / sixrush / alphabet are races. timed is hot potato. survival is shared-clock elimination.
 export type GroupMode = "rush" | "sixrush" | "alphabet" | "timed" | "survival";
 
 export type PromptItem = {
@@ -95,13 +103,17 @@ export type PromptItem = {
   examples: string[];
 };
 
+// Everything about the current hot-potato turn lives in ONE json value so it
+// can be swapped atomically (compare-and-set on game.turn_number).
+// Host settings (limit / shorten / maxLives) live here so every client
+// computes the next turn from the same rules.
 type TurnState = {
-  current: string;
-  origin: string;
-  prompt: PromptItem;
-  promptIndex: number;
+  current: string; // player_id whose turn it is
+  origin: string; // player who first received this fragment
+  prompt: PromptItem; // fragment being passed around
+  promptIndex: number; // index into game.prompts (wraps)
   deadline: string;
-  skipDeadline: string;
+  skipDeadline: string; // the real end of the current turn
   turnStartedAt: string;
   limit: number;
   shorten: boolean;
@@ -125,7 +137,7 @@ type Player = {
   room_code: string;
   display_name: string;
   joined_at: string;
-  progress: number;
+  progress: number; // rush/sixrush: words. alphabet: letters collected.
   finished_at: string | null;
 };
 
@@ -138,7 +150,7 @@ type Game = {
   finish_mode: "first" | "last";
   started_at: string | null;
   game_mode: GroupMode;
-  turn_number: number;
+  turn_number: number; // bumps on every timed turn change
   turn_state: TurnState | null;
 };
 
@@ -172,24 +184,22 @@ const MODE_OPTIONS: { value: GroupMode; label: string; hint: string }[] = [
   },
 ];
 
-// Returns how much progress a player needs to finish a race: 26 letters for
-// alphabet mode, otherwise 20 words.
+/* ==========================================================================
+ * GAME RULE HELPERS (pure)
+ * ========================================================================== */
+
+// How much "progress" a player needs to finish a race mode.
 const targetOf = (mode: GroupMode) =>
   mode === "alphabet" ? ALPHABET_TARGET : TARGET_WORDS;
 
-// Returns how many prompts to generate for a mode. Rush and sixrush need
-// exactly 20. Alphabet, timed and survival have no fixed length, so they get a
-// pool of 60 that wraps back to the start if it ever runs out.
+// How many fragments to generate. Alphabet, timed, and survival have no fixed length,
+// so they get a pool that wraps around if it ever runs out.
 const promptCountFor = (mode: GroupMode) =>
   mode === "alphabet" || mode === "timed" || mode === "survival"
     ? PROMPT_POOL_SIZE
     : TARGET_WORDS;
 
-// Validates a submitted word and returns an error message, or null if it is
-// fine. It checks in order: minimum length (6 for sixrush, otherwise one more
-// than the fragment), letters only, contains the fragment, exists in the
-// dictionary, and has not been used before. The `used` argument only needs a
-// has() method, so it accepts a Set.
+// Returns an error message, or null if the word is fine.
 function checkWord(
   word: string,
   fragment: string,
@@ -217,9 +227,8 @@ function checkWord(
   return null;
 }
 
-// Merges the letters of a word into a player's collected-letter list. It
-// puts the existing letters in a Set, adds each uppercase letter of the word,
-// and returns the result as an array without duplicates.
+/* ---- hot potato transitions ---------------------------------------------- */
+
 const addLetters = (word: string, current: string[]) => {
   const next = new Set(current);
   for (const char of word.toUpperCase()) {
@@ -228,28 +237,21 @@ const addLetters = (word: string, current: string[]) => {
   return [...next];
 };
 
-// Returns the seconds allowed per turn in timed mode. It uses the rules saved
-// in the turn state, not any one player's settings, so every client agrees. The
-// time drops to the short value once speed-up is on and total words reach
-// (players x 20).
+// Per-turn limit for timed mode, from the rules stored in the turn state
+// (NOT from whichever client happens to be solving).
 const timedLimitFor = (ts: TurnState) =>
   ts.shorten &&
-    ts.totalWords >= ts.order.length * TIMED_SHORT_AFTER_WORDS_PER_PLAYER
+  ts.totalWords >= ts.order.length * TIMED_SHORT_AFTER_WORDS_PER_PLAYER
     ? TIMED_SHORT_TIME_DEFAULT
     : ts.limit;
 
-// Returns how many seconds the current player has used on this turn. It
-// subtracts the turn start from the shared clock, never goes below 0, and caps
-// the result at the 15 second skip time.
+// Seconds the current player has used on this turn (capped at the skip time).
 const turnElapsed = (ts: TurnState) =>
   Math.min(
     SURVIVAL_SKIP_SECONDS,
     Math.max(0, (now() - new Date(ts.turnStartedAt).getTime()) / 1000),
   );
 
-// Returns the set of players still in the game. A player counts as alive if
-// they are still in the room and have lives left (timed) or time left in their
-// bank (survival).
 function aliveIds(ts: TurnState, present: Set<string>) {
   return new Set(
     ts.order.filter((id) => {
@@ -261,9 +263,6 @@ function aliveIds(ts: TurnState, present: Set<string>) {
   );
 }
 
-// Finds who gets the next turn. It walks the seating order starting at
-// startIdx, wrapping around the end of the list with modulo, and returns the
-// first player who is alive, or null if nobody is.
 function firstAliveFrom(order: string[], alive: Set<string>, startIdx: number) {
   for (let step = 0; step < order.length; step++) {
     const id = order[(startIdx + step) % order.length];
@@ -272,12 +271,6 @@ function firstAliveFrom(order: string[], alive: Set<string>, startIdx: number) {
   return null;
 }
 
-// Builds the turn state for the next turn. It advances the prompt index
-// (wrapping around the prompt list), makes the chosen player the holder, and
-// takes one timestamp for the whole turn. It then computes two deadlines: the
-// skip deadline (when the turn ends) and the main deadline (when their clock
-// runs out). In survival the turn is at most 15 seconds and limited by the
-// player's bank; in timed both use the per-turn limit.
 function withNewFragment(
   ts: TurnState,
   prompts: PromptItem[],
@@ -287,7 +280,7 @@ function withNewFragment(
   limit: number,
 ): TurnState {
   const promptIndex = ts.promptIndex + 1;
-  const t = now();
+  const t = now(); // ONE timestamp for the whole turn
   const bank = ts.remaining[holder] ?? SURVIVAL_TIME;
   const turnSeconds =
     mode === "survival" ? Math.min(SURVIVAL_SKIP_SECONDS, bank) : limit;
@@ -306,18 +299,21 @@ function withNewFragment(
   };
 }
 
-// Records a correct word in the turn state without changing whose turn it
-// is. It adds the word to the shared used list, increases the total word count,
-// stores the last word and who typed it, and adds the word's letters to that
-// player's alphabet collection. It returns a new state object and does not
-// modify the old one.
 function recordAcceptedWord(
   ts: TurnState,
   word: string,
   playerId: string,
+  nameOf: (id: string) => string,
 ): TurnState {
   const letters = { ...ts.letters };
-  letters[playerId] = addLetters(word, letters[playerId] ?? []);
+  const before = letters[playerId] ?? [];
+  let after = addLetters(word, before);
+  const lives = { ...ts.lives };
+  let note = "";
+
+
+
+  letters[playerId] = after;
 
   return {
     ...ts,
@@ -326,14 +322,11 @@ function recordAcceptedWord(
     lastWord: word,
     lastWordBy: playerId,
     letters,
-    note: "",
+    lives,
+    note,
   };
 }
 
-// Computes the next state after a player answers correctly in timed mode. It
-// records the word, finds the next alive player after the current seat, and
-// hands them a new fragment with a fresh timer. The pure function is run by the
-// client that answered, and the database write decides if it takes effect.
 function solveTimedTurn(
   ts: TurnState,
   word: string,
@@ -341,7 +334,7 @@ function solveTimedTurn(
   present: Set<string>,
   nameOf: (id: string) => string,
 ): TurnState {
-  const base = recordAcceptedWord(ts, word, ts.current);
+  const base = recordAcceptedWord(ts, word, ts.current, nameOf);
   const alive = aliveIds(base, present);
   const idx = ts.order.indexOf(ts.current);
   const holder = firstAliveFrom(ts.order, alive, idx + 1) ?? ts.current;
@@ -356,11 +349,6 @@ function solveTimedTurn(
   );
 }
 
-// Computes the next state when the current player runs out of time in timed
-// mode. They lose one life, or all of them if they left the room. They are added
-// to the elimination list when lives reach 0. If one or no players remain, it
-// sets endedAt and returns without a new turn. Otherwise the turn passes to the
-// next alive player with a new fragment.
 function failTimedTurn(
   ts: TurnState,
   prompts: PromptItem[],
@@ -408,11 +396,6 @@ function failTimedTurn(
   );
 }
 
-// Computes the next state after a correct answer in survival mode. It
-// subtracts the time used this turn from the player's bank and eliminates them
-// if the bank hits 0. After recording the word, it ends the game if one or no
-// players are left. Otherwise the next alive player gets a fragment with a
-// 15 second window.
 function solveSurvivalTurn(
   ts: TurnState,
   word: string,
@@ -431,6 +414,7 @@ function solveSurvivalTurn(
     { ...ts, remaining, eliminated },
     word,
     ts.current,
+    nameOf,
   );
   const alive = aliveIds(base, present);
   const idx = ts.order.indexOf(ts.current);
@@ -450,11 +434,6 @@ function solveSurvivalTurn(
   );
 }
 
-// Computes the next state when a survival turn hits the 15 second skip. The
-// player is charged the time used, or their whole bank if they left the room
-// (otherwise they would stay "alive" and be skipped forever). They are
-// eliminated if the bank reaches 0. If one or no players remain it sets endedAt
-// and stops. Otherwise the turn passes to the next alive player.
 function failSurvivalTurn(
   ts: TurnState,
   prompts: PromptItem[],
@@ -464,6 +443,8 @@ function failSurvivalTurn(
   const current = ts.current;
   const gone = !present.has(current);
 
+  // A player who left loses their whole bank, otherwise they'd stay "alive"
+  // in the UI and the turn would be re-failed forever.
   const remaining = {
     ...ts.remaining,
     [current]: gone
@@ -507,9 +488,10 @@ function failSurvivalTurn(
   );
 }
 
-// An Error type for failed API calls. It carries the HTTP status code so
-// callers can react to specific cases, such as 409 (a duplicate room code or
-// player name).
+/* ==========================================================================
+ * API HELPERS
+ * ========================================================================== */
+
 class ApiError extends Error {
   status: number;
 
@@ -524,10 +506,6 @@ const AUTH_HEADERS = {
   Authorization: `Bearer ${SUPABASE_KEY}`,
 };
 
-// Wrapper around fetch for all database calls. It adds the Supabase auth and
-// JSON headers (callers can override them), throws an ApiError with the status
-// and response body when the request fails, and parses the JSON response. An
-// empty response body becomes null.
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     ...init,
@@ -553,9 +531,6 @@ const MINIMAL = {
   Prefer: "return=minimal",
 };
 
-// Reads the global games-played total from the counter API and stores it in
-// state. It does a GET and uses the value field of the JSON response. Errors are
-// ignored because the counter is cosmetic.
 async function loadGamesPlayed(
   setGamesPlayed: Dispatch<SetStateAction<number>>,
 ) {
@@ -567,12 +542,11 @@ async function loadGamesPlayed(
     const data = await response.json();
 
     setGamesPlayed(Number(data.value) || 0);
-  } catch { }
+  } catch {
+    // counter is cosmetic, ignore failures
+  }
 }
 
-// Adds one to the global games-played counter. The hit endpoint increments
-// the count and returns the new total, which is stored in state. Errors are
-// ignored because the counter is cosmetic.
 async function countGamePlayed(
   setGamesPlayed: Dispatch<SetStateAction<number>>,
 ) {
@@ -584,12 +558,11 @@ async function countGamePlayed(
     const data = await response.json();
 
     setGamesPlayed(Number(data.value) || 0);
-  } catch { }
+  } catch {
+    // counter is cosmetic, ignore failures
+  }
 }
 
-// Returns this browser's permanent player id. It reads a UUID from
-// localStorage, and if none exists yet it creates one and saves it, so a player
-// keeps the same identity across page reloads.
 function getPlayerId() {
   let id = localStorage.getItem(PLAYER_ID_KEY);
 
@@ -601,9 +574,7 @@ function getPlayerId() {
   return id;
 }
 
-// Generates a random 4 letter game code. It takes random bytes from the
-// browser's secure random generator and maps each to a letter. The letters I and
-// O are left out so codes cannot be confused with 1 and 0.
+// 4 letters, no I or O so they can't be confused with 1 or 0.
 function makeRoomCode() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ";
 
@@ -612,8 +583,6 @@ function makeRoomCode() {
     .join("");
 }
 
-// Loads one game (room) row by its code, selecting only the columns the app
-// uses. It returns the row, or null if no such room exists.
 async function fetchGame(room: string) {
   const rows = await request<Game[]>(
     `${GAMES_URL}?room_code=eq.${enc(
@@ -624,8 +593,6 @@ async function fetchGame(room: string) {
   return rows[0] ?? null;
 }
 
-// Loads every player in a room, ordered by when they joined, so the first
-// entry is the longest-present player.
 function fetchPlayers(room: string) {
   return request<Player[]>(
     `${PLAYERS_URL}?room_code=eq.${enc(
@@ -634,16 +601,12 @@ function fetchPlayers(room: string) {
   );
 }
 
-// Deletes this browser's player row, removing the player from whichever room
-// they were in.
 function removeMe() {
   return request<null>(`${PLAYERS_URL}?player_id=eq.${enc(getPlayerId())}`, {
     method: "DELETE",
   });
 }
 
-// Resets every player in a room for a new round by setting progress back to 0
-// and clearing their finish time.
 function resetPlayers(room: string) {
   return request<null>(`${PLAYERS_URL}?room_code=eq.${enc(room)}`, {
     method: "PATCH",
@@ -655,8 +618,6 @@ function resetPlayers(room: string) {
   });
 }
 
-// Updates fields on a room's game row and stamps updated_at with the shared
-// clock time.
 function patchGame(room: string, body: Record<string, unknown>) {
   return request<null>(`${GAMES_URL}?room_code=eq.${enc(room)}`, {
     method: "PATCH",
@@ -668,12 +629,10 @@ function patchGame(room: string, body: Record<string, unknown>) {
   });
 }
 
-// Writes a new turn state using compare-and-set. The URL filter
-// turn_number=eq.N means the update only applies if nobody else has advanced the
-// turn since this client read it, such as an answer and a timeout landing at the
-// same moment. It asks for the updated row back. It returns that row if the write
-// won, or null if another client got there first, in which case the next poll
-// shows the winning state.
+// Compare-and-set for hot potato. The `turn_number=eq.N` filter means the
+// update only applies if nobody else advanced the turn first (e.g. the solver
+// and a timeout firing at the same moment). Returns the new row, or
+// null if we lost the race (which is fine: the poll will show the winner's state).
 async function patchTurn(room: string, expectedTurn: number, next: TurnState) {
   const rows = await request<Pick<Game, "turn_state" | "turn_number">[] | null>(
     `${GAMES_URL}?room_code=eq.${enc(
@@ -693,8 +652,6 @@ async function patchTurn(room: string, expectedTurn: number, next: TurnState) {
   return rows?.[0] ?? null;
 }
 
-// Saves this player's progress (words answered, or letters collected in
-// alphabet mode) to the database so other players' progress bars update.
 function saveProgress(progress: number) {
   return request<null>(`${PLAYERS_URL}?player_id=eq.${enc(getPlayerId())}`, {
     method: "PATCH",
@@ -705,9 +662,8 @@ function saveProgress(progress: number) {
   });
 }
 
-// Tells the server this player has finished. It calls the finish_group_player
-// function, which stamps finished_at with the server's own clock once progress
-// has reached the target, so finish times cannot be skewed by a device's clock.
+// Server stamps finished_at = now() once progress >= target.
+// (alphabet passes 26, the others pass 20)
 function saveFinished(target: number) {
   return request<null>(`${SUPABASE_URL}/rest/v1/rpc/finish_group_player`, {
     method: "POST",
@@ -718,8 +674,6 @@ function saveFinished(target: number) {
   });
 }
 
-// Removes this player from a room. If they were the host, it hands host to the
-// longest-present remaining player, or deletes the room when nobody is left.
 async function leaveRoom(room: string, hostId: string | undefined) {
   const me = getPlayerId();
 
@@ -740,26 +694,28 @@ async function leaveRoom(room: string, hostId: string | undefined) {
   }
 }
 
-// The multiplayer screen. The database is the source of truth: the component
-// polls the room and player rows, and derives a single `phase` (menu, lobby,
-// countdown, race or results) that decides what is shown. Race modes (rush,
-// sixrush, alphabet) are tracked per player locally and synced as progress.
-// Timed and survival are turn-based and share one turn state that is swapped
-// with compare-and-set writes.
+/* ==========================================================================
+ * COMPONENT
+ * ========================================================================== */
+
 export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
   const me = useMemo(getPlayerId, []);
 
+  // ---- menu state ----
   const [name, setName] = useState(() => localStorage.getItem(NAME_KEY) ?? "");
   const [codeInput, setCodeInput] = useState("");
 
+  // ---- room state (synced from Supabase by polling) ----
   const [room, setRoom] = useState<string | null>(null);
   const [game, setGame] = useState<Game | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
 
+  // ---- UI feedback ----
   const [error, setError] = useState("");
   const [syncError, setSyncError] = useState("");
   const [busy, setBusy] = useState(false);
 
+  // ---- host settings (only used by the host when starting) ----
   const [difficulty, setDifficulty] = useState<GroupDifficulty>("superEasy");
   const [finishMode, setFinishMode] = useState<"first" | "last">("first");
   const [modeChoice, setModeChoice] = useState<GroupMode>("rush");
@@ -767,23 +723,24 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
   const [timedLives, setTimedLives] = useState(TIMED_LIVES_DEFAULT);
   const [shortenTimed, setShortenTimed] = useState(true);
 
-  const [index, setIndex] = useState(0);
+  // ---- my local race state ----
+  const [index, setIndex] = useState(0); // words I've answered (race modes)
   const [input, setInput] = useState("");
   const [message, setMessage] = useState("");
   const [used, setUsed] = useState<Set<string>>(new Set());
-  const [letters, setLetters] = useState<Set<string>>(new Set());
+  const [letters, setLetters] = useState<Set<string>>(new Set()); // alphabet
   const [countdown, setCountdown] = useState(0);
   const [raceTime, setRaceTime] = useState(0);
   const [gameElapsed, setGameElapsed] = useState(0);
-  const [turnLeft, setTurnLeft] = useState(0);
-  const [skipLeft, setSkipLeft] = useState(0);
+  const [turnLeft, setTurnLeft] = useState(0); // timed: seconds left this turn
+  const [skipLeft, setSkipLeft] = useState(0); // survival only: seconds until 15s skip
 
   const [gamesPlayed, setGamesPlayed] = useState(0);
 
   const seenGameNumber = useRef(0);
   const saveChain = useRef<Promise<unknown>>(Promise.resolve());
-  const firedTurn = useRef("");
-  const jitter = useRef(Math.random() * 800);
+  const firedTurn = useRef(""); // which turn I already tried to time out
+  const jitter = useRef(Math.random() * 800); // spreads out backup timeouts
 
   const isHost = !!game && game.host_id === me;
 
@@ -793,19 +750,19 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
   const target = targetOf(mode);
   const ts = game?.turn_state ?? null;
 
-  // Runs network saves one after another. Each new save is chained onto the
-  // previous promise, so an older progress update can never arrive after a newer
-  // one. A failed save is logged and does not block later ones.
   const queueSave = (fn: () => Promise<unknown>) => {
     saveChain.current = saveChain.current
-      .catch(() => { })
+      .catch(() => {})
       .then(fn)
       .catch((e) => console.error("SAVE ERROR:", e));
   };
 
-  // Effect: keeps the shared clock accurate. It takes 5 samples on mount, then
-  // one every minute, and 2 more whenever the tab becomes visible again, since
-  // background tabs can drift or be throttled.
+  /* ------------------------------------------------------------------------
+   * EFFECTS
+   * ---------------------------------------------------------------------- */
+
+  // Keep the shared clock fresh: on mount, every minute, and when the tab
+  // comes back to the foreground.
   useEffect(() => {
     syncClock(5);
 
@@ -823,8 +780,6 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     };
   }, []);
 
-  // Effect: loads the global games-played counter on mount and refreshes it
-  // every 5 seconds.
   useEffect(() => {
     loadGamesPlayed(setGamesPlayed);
 
@@ -835,14 +790,10 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     return () => window.clearInterval(id);
   }, []);
 
+  // Poll the room + players. Faster while a timed/survival game is running.
   const pollMs =
     isTimed && game?.status === "playing" ? TIMED_POLL_MS : POLL_MS;
 
-  // Effect: polls the room and its players while in a room (every 0.5 seconds
-  // during a running timed or survival game, otherwise every second). If the
-  // game row is gone it returns to the menu. A response older than the local turn
-  // number is ignored, so a slow poll cannot undo a turn this client just wrote.
-  // The `cancelled` flag discards results that arrive after cleanup.
   useEffect(() => {
     if (!room) return;
 
@@ -862,12 +813,13 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
           return;
         }
 
+        // Ignore a stale poll that started before one of our own turn writes.
         setGame((cur) =>
           cur &&
-            cur.status === "playing" &&
-            g.status === "playing" &&
-            g.game_number === cur.game_number &&
-            g.turn_number < cur.turn_number
+          cur.status === "playing" &&
+          g.status === "playing" &&
+          g.game_number === cur.game_number &&
+          g.turn_number < cur.turn_number
             ? cur
             : g,
         );
@@ -892,9 +844,6 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     };
   }, [room, pollMs]);
 
-  // Effect: removes the player from the room when the page is closed or
-  // hidden. It sends a DELETE with keepalive so the browser finishes the request
-  // even while the page is unloading.
   useEffect(() => {
     if (!room) return;
 
@@ -903,7 +852,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
         method: "DELETE",
         keepalive: true,
         headers: AUTH_HEADERS,
-      }).catch(() => { });
+      }).catch(() => {});
     };
 
     window.addEventListener("pagehide", onHide);
@@ -911,9 +860,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     return () => window.removeEventListener("pagehide", onHide);
   }, [room, me]);
 
-  // Effect: resets this player's local state when a new round begins. It
-  // compares the game number against the last one seen and clears the word index,
-  // input, message, used words and collected letters.
+  // Reset MY local state whenever a new round begins.
   useEffect(() => {
     if (!game) return;
 
@@ -928,16 +875,13 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     }
   }, [game?.game_number]);
 
-  // Effect: clears the text box and message whenever the turn number changes,
-  // so a half-typed word does not carry over to the next turn.
+  // Timed: clear the box whenever the potato moves.
   useEffect(() => {
     setInput("");
     setMessage("");
   }, [game?.turn_number]);
 
-  // Effect: drives the pre-game countdown. Every 100 ms it computes the whole
-  // seconds left until started_at on the shared clock, and shows 0 once the start
-  // time has passed.
+  // Countdown to started_at.
   useEffect(() => {
     if (!game || game.status !== "playing" || !game.started_at) {
       setCountdown(0);
@@ -966,9 +910,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     return () => window.clearInterval(id);
   }, [game?.status, game?.started_at]);
 
-  // Effect: drives the race stopwatch. Every 50 ms it sets raceTime to the
-  // seconds since started_at on the shared clock, so all players see the same
-  // time. It stays at 0 during the countdown.
+  // Race clock (race modes).
   useEffect(() => {
     if (!game || game.status !== "playing" || !game.started_at) {
       setRaceTime(0);
@@ -997,9 +939,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     return () => window.clearInterval(id);
   }, [game?.status, game?.started_at]);
 
-  // Effect: tracks the total game length for the results screen. It measures
-  // from started_at to the current time, or to endedAt once the game has ended,
-  // so the number stops counting when the game is over.
+  // Total multiplayer game length.
   useEffect(() => {
     if (!game || game.status !== "playing" || !game.started_at) {
       setGameElapsed(0);
@@ -1017,10 +957,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     return () => window.clearInterval(id);
   }, [game?.status, game?.started_at, ts?.endedAt]);
 
-  // Effect: updates the turn timers in timed and survival modes. Every 100 ms it
-  // computes the seconds until the survival skip and the seconds left on the
-  // main clock. In survival the main clock is the player's bank minus time used
-  // this turn, and in timed it is the time to the deadline.
+  // Timed: seconds left on the current turn (and until the survival skip).
   useEffect(() => {
     if (!isTimed || !ts || game?.status !== "playing") {
       setTurnLeft(0);
@@ -1051,20 +988,25 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     return () => window.clearInterval(id);
   }, [isTimed, isSurvival, game?.status, game?.turn_number, ts?.skipDeadline]);
 
+  /* ------------------------------------------------------------------------
+   * DERIVED DATA
+   * ---------------------------------------------------------------------- */
+
   const playerById = useMemo(
     () => new Map(players.map((p) => [p.player_id, p])),
     [players],
   );
 
-  // Looks up a player's display name by id, falling back to "someone" if they
-  // are no longer in the room.
   const nameOf = (id: string) => playerById.get(id)?.display_name ?? "someone";
 
+  // Refs so the timeout effect always sees fresh players/names without
+  // restarting its interval on every poll.
   const playersRef = useRef(players);
   playersRef.current = players;
   const nameOfRef = useRef(nameOf);
   nameOfRef.current = nameOf;
 
+  // ---- race modes ----
   const ranked = useMemo(
     () =>
       [...players].sort((a, b) => {
@@ -1108,6 +1050,8 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
   const raceIsOver =
     !!raceWinner && (game?.finish_mode === "first" || everyoneFinished);
 
+  // ---- timed ----
+  // Winner first, then everyone else by how late they were knocked out.
   const timedRanking = useMemo(() => {
     if (!ts) return [] as Player[];
 
@@ -1126,8 +1070,8 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
 
   const timedAliveCount = ts
     ? ts.order.filter((id) =>
-      isSurvival ? (ts.remaining[id] ?? 0) > 0 : (ts.lives[id] ?? 0) > 0,
-    ).length
+        isSurvival ? (ts.remaining[id] ?? 0) > 0 : (ts.lives[id] ?? 0) > 0,
+      ).length
     : 0;
 
   const timedOver = isTimed && !!ts && timedAliveCount <= 1;
@@ -1136,17 +1080,14 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     () =>
       ts
         ? ts.order
-          .map((id) => playerById.get(id))
-          .filter((p): p is Player => !!p)
+            .map((id) => playerById.get(id))
+            .filter((p): p is Player => !!p)
         : [],
     [ts, playerById],
   );
 
   const myLives = ts?.lives[me] ?? 0;
 
-  // Returns a player's survival time bank including the time already used on
-  // the current turn, so the display ticks down smoothly. Only the player whose
-  // turn it is has a running clock; everyone else shows their stored value.
   const liveRemainingFor = (playerId: string) => {
     if (!ts || !isSurvival) {
       return ts?.remaining[playerId] ?? 0;
@@ -1174,6 +1115,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
 
   const winner = isTimed ? (timedRanking[0] ?? null) : raceWinner;
 
+  // ---- my progress in a race ----
   const myProgress = mode === "alphabet" ? letters.size : index;
   const iFinished = myProgress >= target;
 
@@ -1192,9 +1134,8 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
           ? "countdown"
           : "race";
 
-  // Applies a freshly written turn row to local state right away, so the player
-  // who made the move sees it instantly instead of waiting for the next poll. It
-  // refuses to go backwards by ignoring rows with an older turn number.
+  // Apply a freshly written turn row locally so the actor sees it instantly
+  // instead of waiting for the next poll.
   const applyTurnRow = (row: Pick<Game, "turn_state" | "turn_number">) => {
     setGame((cur) =>
       cur && row.turn_number >= cur.turn_number
@@ -1203,14 +1144,13 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     );
   };
 
-  // Effect: the turn-timeout referee for timed and survival. Every 250 ms it
-  // checks whether the current turn's skip deadline plus a grace period has
-  // passed, or whether the current player has left the room (host only). The host
-  // uses a short grace; every other client uses a longer, randomly jittered grace
-  // so a backgrounded host cannot freeze the game. When a turn is late it builds
-  // the "fail" state and tries patchTurn. Because patchTurn is compare-and-set,
-  // several clients can try and only one write wins. firedTurn prevents retrying
-  // the same turn, and is cleared if the request errors.
+  /* ------------------------------------------------------------------------
+   * EFFECT: turn timeouts.
+   * The host is the primary referee (short grace). Every other client is a
+   * backup with a longer, jittered grace, so a backgrounded/throttled host
+   * can't freeze the game. patchTurn's compare-and-set makes it safe for
+   * several clients to try: only one write wins.
+   * ---------------------------------------------------------------------- */
   useEffect(() => {
     if (
       !room ||
@@ -1231,6 +1171,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     const check = () => {
       if (firedTurn.current === turnKey) return;
 
+      // don't referee during the pre-game countdown
       if (now() < new Date(game.started_at ?? 0).getTime()) return;
 
       const present = new Set<string>(
@@ -1275,8 +1216,10 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     timedOver,
   ]);
 
-  // Validates the display name field. The trimmed name must be 1 to 15 letters.
-  // It returns the name, or sets an error message and returns null.
+  /* ------------------------------------------------------------------------
+   * ACTIONS
+   * ---------------------------------------------------------------------- */
+
   const validName = () => {
     const n = name.trim().slice(0, MAX_NAME_LENGTH);
 
@@ -1288,9 +1231,6 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     return n;
   };
 
-  // Moves this client into a room. It remembers the name in localStorage,
-  // resets the round and turn tracking refs and clears any old game data, then
-  // sets the room code, which starts the polling effect.
   const enterRoom = (code: string, displayName: string) => {
     localStorage.setItem(NAME_KEY, displayName);
 
@@ -1305,10 +1245,6 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     setRoom(code);
   };
 
-  // Creates a new game. After validating the name and leaving any previous room,
-  // it tries random room codes and inserts a game row, retrying on a 409
-  // (duplicate code) up to 5 times. It then inserts this player and enters the
-  // room. The busy flag disables the buttons while this runs.
   const handleCreate = async () => {
     const n = validName();
 
@@ -1365,10 +1301,6 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     }
   };
 
-  // Joins an existing game by code. It validates the name and the 4 letter
-  // code, then checks that the room exists, has not started, and is not full. It
-  // removes the player from any old room and inserts them. A 409 from the insert
-  // means the name is already taken in that room.
   const handleJoin = async () => {
     const n = validName();
 
@@ -1438,9 +1370,6 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     }
   };
 
-  // Leaves the current room. It clears the local room state first so the UI
-  // returns to the menu immediately, then does the server cleanup (removing the
-  // player and handing off or deleting the room) afterward.
   const handleLeave = async () => {
     const currentRoom = room;
     const hostId = game?.host_id;
@@ -1460,20 +1389,12 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     }
   };
 
-  // Leaves the room and then returns to the solo screen.
   const handleExit = async () => {
     await handleLeave();
     onExit();
   };
 
-  // Starts the game (host only, with at least 2 players). It generates the shared
-  // prompt list and resets players, then re-syncs the clock before choosing the
-  // start time, so slow network work does not use up the countdown. The start
-  // time is the current shared time plus 3 seconds. For timed and survival it
-  // builds the full initial turn state (seating order, lives or time banks, first
-  // holder and deadlines). Then it writes status, prompts, mode and start time in
-  // one update, which moves every client from the lobby to the countdown. The
-  // games-played counter is incremented afterward so it cannot delay the start.
+  // START GAME (host only)
   const handleStart = async () => {
     if (!room || !game || !isHost) return;
 
@@ -1492,6 +1413,8 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
         modeChoice,
       );
 
+      // Do the slow network work BEFORE stamping the start time, so the
+      // countdown isn't eaten by it.
       await resetPlayers(room);
       await syncClock(1);
 
@@ -1555,6 +1478,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
         turn_state: turnState,
       });
 
+      // Cosmetic counter: runs after the game is live, never delays the start.
       void (async () => {
         for (let i = 0; i < players.length; i++) {
           await countGamePlayed(setGamesPlayed);
@@ -1570,9 +1494,6 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     }
   };
 
-  // Sends everyone back to the lobby after a game (host only). It sets the game
-  // status back to waiting, clears the turn state, and resets every player's
-  // progress.
   const handleBackToLobby = async () => {
     if (!room || !isHost) return;
 
@@ -1596,13 +1517,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     }
   };
 
-  // Handles a word submission in race modes (rush, sixrush, alphabet). It ignores
-  // input during the countdown, then validates the word with checkWord against the
-  // player's own position in the prompt list. All of this is local: it updates the
-  // word index, used words and letters immediately. It then saves progress through
-  // the save queue. When the player finishes, progress is saved first and the
-  // finish function second, because the server only stamps the finish time if
-  // progress has already reached the target.
+  // SUBMIT A WORD (rush / sixrush / alphabet)
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
 
@@ -1627,6 +1542,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
       return;
     }
 
+    // --- word accepted ---
     const nextIndex = index + 1;
 
     const nextLetters = new Set(letters);
@@ -1650,6 +1566,9 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     setMessage(justFinished ? "" : "good word!");
 
     if (justFinished) {
+      // Progress must be written BEFORE the finish RPC, otherwise the server
+      // sees progress < target and doesn't stamp finished_at. Running both on
+      // the save queue also stops older saves from landing afterwards.
       queueSave(async () => {
         await saveProgress(target);
         await saveFinished(target);
@@ -1659,13 +1578,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     }
   };
 
-  // Handles a word submission in timed and survival modes. It only works on the
-  // player's own turn, after the countdown, and before the skip deadline plus a
-  // small grace. The word is checked against the shared used-word list. If it is
-  // valid, it builds the next turn state with solveTimedTurn or solveSurvivalTurn
-  // and writes it with patchTurn. A successful write is applied locally right
-  // away. If the write loses the race to another client, the next poll shows the
-  // real state.
+  // SUBMIT A WORD (timed / survival): only works on my turn.
   const handleTimedSubmit = (event: FormEvent) => {
     event.preventDefault();
 
@@ -1712,15 +1625,13 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
       });
   };
 
-  // Returns a player's progress for the scoreboard. For this player during a
-  // race it uses the local value, which is always current, instead of the
-  // database value that may lag behind the last save.
+  /* ------------------------------------------------------------------------
+   * RENDER HELPERS
+   * ---------------------------------------------------------------------- */
+
   const progressOf = (p: Player) =>
     phase === "race" && p.player_id === me ? myProgress : p.progress;
 
-  // Returns how many seconds a player took to finish, as finished_at minus
-  // started_at. It returns null if the game has not started, the player has not
-  // finished, or either timestamp is invalid.
   const getElapsedSeconds = (p: Player) => {
     if (!game?.started_at || !p.finished_at) {
       return null;
@@ -1736,22 +1647,14 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     return Math.max(0, (finish - start) / 1000);
   };
 
-  // Formats a number of seconds as text with two decimals and an "s" suffix, or
-  // a dash when there is no value.
   const formatTime = (seconds: number | null) => {
     if (seconds === null) return "—";
 
     return `${seconds.toFixed(2)}s`;
   };
 
-  // Renders the race scoreboard. Each player gets a row with their name, a
-  // progress bar filled to progress divided by the target, and either a count
-  // (such as 7/20) or their finish time once done. During play it lists players in
-  // join order and on the results screen it uses the ranked order. The winner gets
-  // a crown, and the current player's row gets an extra class to highlight it.
+  // Progress bars for race modes.
   const renderScoreboard = () => (
-    // RACE SCOREBOARD: one row per player. During the race rows are in join
-    // order; on the results screen they are sorted by finish time / progress.
     <div className="mp-board">
       {(phase === "results" ? ranked : players).map((p) => {
         const count = Math.min(target, progressOf(p));
@@ -1762,12 +1665,10 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
           phase === "results" && winner?.player_id === p.player_id;
 
         return (
-          // One player's row (extra "mp-me" class highlights the local player)
           <div
             key={p.player_id}
             className={p.player_id === me ? "mp-row mp-me" : "mp-row"}
           >
-            {/* Left column: the player's display name, with a crown if they won */}
             <span className="mp-name">
               {isWinner && (
                 <span
@@ -1781,13 +1682,10 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
               {p.display_name}
             </span>
 
-            {/* Middle column: progress bar filled to count / target */}
             <div className="mp-bar">
               <i style={{ width: `${(count / target) * 100}%` }} />
             </div>
 
-            {/* Right column: finish time once done (e.g. 31.42s), otherwise the
-                running count (e.g. 7/20 words, or 12/26 letters in alphabet) */}
             <span className="mp-count">
               {elapsed !== null ? formatTime(elapsed) : `${count}/${target}`}
             </span>
@@ -1797,11 +1695,6 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     </div>
   );
 
-  // Renders the scoreboard for timed and survival. Each row shows the name, a bar
-  // for lives left (timed) or time bank left (survival), and hearts or seconds.
-  // Eliminated players are dimmed and labelled "out", the player holding the turn
-  // gets an arrow, and the winner gets a crown on the results screen. During play
-  // it uses seating order; at the end it uses the elimination ranking.
   const renderTimedBoard = () => {
     if (!ts) return null;
 
@@ -1809,8 +1702,6 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     const maxLives = Math.max(1, ts.maxLives ?? timedLives);
 
     return (
-      // TIMED / SURVIVAL SCOREBOARD: one row per player showing what they have
-      // left (lives in timed, seconds in survival).
       <div className="mp-board">
         {rows.map((p) => {
           const lives = ts.lives[p.player_id] ?? 0;
@@ -1822,14 +1713,11 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
             phase === "race" && !out && ts.current === p.player_id;
 
           return (
-            // One player's row: highlighted if it's me, dimmed to 45% if eliminated
             <div
               key={p.player_id}
               className={p.player_id === me ? "mp-row mp-me" : "mp-row"}
               style={out ? { opacity: 0.45 } : undefined}
             >
-              {/* Left column: name, with a crown for the winner (results) or a
-                  ▶ arrow for whoever currently holds the turn (during play) */}
               <span className="mp-name">
                 {phase === "results" && winner?.player_id === p.player_id && (
                   <span style={{ marginRight: "6px", fontSize: "15px" }}>
@@ -1847,24 +1735,21 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
                 {p.display_name}
               </span>
 
-              {/* Middle column: bar showing time bank left out of 60s (survival)
-                  or lives left out of the max (timed) */}
               <div className="mp-bar">
                 <i
                   style={{
-                    width: `${isSurvival
-                      ? Math.max(
-                        0,
-                        Math.min(100, (remaining / SURVIVAL_TIME) * 100),
-                      )
-                      : Math.max(0, Math.min(100, (lives / maxLives) * 100))
-                      }%`,
+                    width: `${
+                      isSurvival
+                        ? Math.max(
+                            0,
+                            Math.min(100, (remaining / SURVIVAL_TIME) * 100),
+                          )
+                        : Math.max(0, Math.min(100, (lives / maxLives) * 100))
+                    }%`,
                   }}
                 />
               </div>
 
-              {/* Right column: "out" if eliminated, otherwise seconds left with
-                  one decimal (survival) or a row of hearts (timed) */}
               <span className="mp-count">
                 {isSurvival
                   ? out
@@ -1893,12 +1778,11 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
           ? "first to collect all 26 letters wins"
           : `first to ${TARGET_WORDS} words wins`;
 
+  /* ------------------------------------------------------------------------
+   * RENDER
+   * ---------------------------------------------------------------------- */
   return (
-    // MULTIPLAYER CARD: a single card whose contents change by `phase`
-    // (menu -> lobby -> countdown -> race -> results). Only one phase block below
-    // is visible at a time.
     <section className="card mp-screen">
-      {/* Global counter: total games played by all users (always visible) */}
       <div className="mp-stats">
         <span>
           total games played by all users{" "}
@@ -1906,15 +1790,11 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
         </span>
       </div>
 
-      {/* Top navigation row */}
       <div className="mp-top">
-        {/* Leaves any room and goes back to the solo game */}
         <button type="button" className="lb-skip" onClick={handleExit}>
           ← back to solo
         </button>
 
-        {/* Only shown while inside a room: leaves the room but stays in
-            multiplayer (returns to the menu) */}
         {room && phase !== "menu" && (
           <button type="button" className="lb-skip" onClick={handleLeave}>
             leave game
@@ -1922,12 +1802,9 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
         )}
       </div>
 
-      {/* PHASE: MENU. The first multiplayer screen, shown when you're not in a
-          room. You enter a display name, then either create a game or join one
-          with a 4 letter code. */}
+      {/* ============ MENU ============ */}
       {phase === "menu" && (
         <div className="mp-menu">
-          {/* Heading and one-line description */}
           <div className="results-header">
             <small>multiplayer</small>
 
@@ -1938,7 +1815,6 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
 
           <div className="divider" />
 
-          {/* Display name box (letters only, max 15, remembered from last time) */}
           <div className="setting">
             <small>display name</small>
 
@@ -1954,7 +1830,6 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
             />
           </div>
 
-          {/* "create game" button: makes a new room and makes you the host */}
           <button
             type="button"
             className="play-again"
@@ -1966,7 +1841,6 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
 
           <div className="divider" />
 
-          {/* Game code box: type a friend's 4 letter code (auto-uppercased) */}
           <div className="setting">
             <small>game code</small>
 
@@ -1984,7 +1858,6 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
             />
           </div>
 
-          {/* "join game" button: disabled until all 4 code letters are entered */}
           <button
             type="button"
             className="play-again"
@@ -1994,16 +1867,13 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
             join game
           </button>
 
-          {/* Error message (bad name, no such game, game full, name taken, etc.) */}
           {error && <div className="message">{error}</div>}
         </div>
       )}
 
-      {/* PHASE: LOBBY. The waiting room before a game starts. Everyone sees the
-          code and player list; only the host sees the game settings. */}
+      {/* ============ LOBBY ============ */}
       {phase === "lobby" && room && (
         <div className="mp-lobby">
-          {/* The room's 4 letter code in large text, with a copy button */}
           <div className="results-header">
             <small>game code</small>
 
@@ -2020,9 +1890,6 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
 
           <div className="divider" />
 
-          {/* Player list: count out of the max (e.g. 3/8), then one row per
-              player with "(you)" next to your own name and a "host" tag next to
-              the host */}
           <div className="group-players">
             <small>
               players ({players.length}/{MAX_PLAYERS})
@@ -2044,12 +1911,8 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
 
           <div className="divider" />
 
-          {/* Host sees the settings and start button; everyone else just sees a
-              waiting message */}
           {isHost ? (
             <>
-              {/* MODE PICKER (host only): rush, sixrush, alphabet, timed, survival
-                  in a 2-column grid, each with a short description */}
               <div className="setting">
                 <small>mode</small>
 
@@ -2081,12 +1944,8 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
 
               <div className="divider" />
 
-              {/* MODE-SPECIFIC SETTINGS: timed shows lives / turn time / speed-up,
-                  survival has no extra settings, and the race modes show the
-                  finish-mode choice */}
               {modeChoice === "timed" ? (
                 <>
-                  {/* Lives per player (1–5 hearts) */}
                   <div className="setting">
                     <small>lives per player</small>
                     <div className="option-grid time-options">
@@ -2108,7 +1967,6 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
 
                   <div className="divider" />
 
-                  {/* Seconds allowed per turn (5s, 10s, 20s, 60s) */}
                   <div className="setting">
                     <small>time per turn</small>
                     <div className="option-grid time-options">
@@ -2129,8 +1987,6 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
 
                   <div className="divider" />
 
-                  {/* Speed-up toggle: on/off, with the threshold scaled by player
-                      count (e.g. "after 60 prompts → 5s" for 3 players) */}
                   <div className="setting">
                     <small>speed up after</small>
                     <button
@@ -2146,15 +2002,11 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
                   </div>
                 </>
               ) : modeChoice === "survival" ? (
-                // Survival has no extra settings, so this renders an empty block
                 <div className="setting"></div>
               ) : (
-                // Race modes only: finish mode
                 <div className="setting">
                   <small>finish mode</small>
 
-                  {/* Two choices: end as soon as someone finishes, or wait until
-                      everyone has finished */}
                   <div
                     className="option-grid"
                     style={{
@@ -2197,8 +2049,6 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
 
               <div className="divider" />
 
-              {/* DIFFICULTY PICKER (host only): easy (5,000+ words) or hard
-                  (500–2,500 words) */}
               <div className="setting">
                 <small>difficulty</small>
 
@@ -2219,7 +2069,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
                       {
                         value: "hard",
                         label: "hard",
-                        hint: "500–2,500 words",
+                        hint: "300–900+ words",
                       },
                     ] as const
                   ).map((option) => (
@@ -2241,8 +2091,6 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
                 </div>
               </div>
 
-              {/* START BUTTON (host only): disabled until 2+ players have joined;
-                  the label shows "waiting for players (1/2)" until then */}
               <button
                 type="button"
                 className="play-again"
@@ -2255,46 +2103,35 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
               </button>
             </>
           ) : (
-            // Non-hosts only see this waiting message
             <p className="rule">waiting for the host to start the game...</p>
           )}
 
-          {/* Error or connection-problem message */}
           {(error || syncError) && (
             <div className="message">{error || syncError}</div>
           )}
         </div>
       )}
 
-      {/* PHASE: COUNTDOWN. The 3-2-1 screen shown to everyone before a game
-          begins. */}
+      {/* ============ COUNTDOWN ============ */}
       {phase === "countdown" && (
         <div className="mp-countdown-screen">
-          {/* "get ready · <mode name>" label */}
           <small>
             get ready ·{" "}
             {MODE_OPTIONS.find((o) => o.value === mode)?.label ?? mode}
           </small>
 
-          {/* Big countdown number (3, 2, 1) */}
           <div className="mp-countdown">{countdown}</div>
 
-          {/* One-line goal for the chosen mode (e.g. "first to 20 words wins") */}
           <p className="rule">{goalText}</p>
         </div>
       )}
 
-      {/* PHASE: RACE (rush / sixrush / alphabet). Everyone types at their own
-          pace through the same list of letters; the scoreboard shows everyone's
-          progress live. */}
+      {/* ============ RACE (rush / sixrush / alphabet) ============ */}
       {phase === "race" && !isTimed && (
         <div className="mp-race">
-          {/* Shared race stopwatch (seconds since the start, two decimals) */}
           <div className="timer">{raceTime.toFixed(2)}s</div>
 
           {iFinished ? (
-            // Shown once YOU have finished: a "you finished!" banner with your
-            // final count, and a status line explaining what happens next
             <div className="results-header">
               <small>you finished!</small>
 
@@ -2310,9 +2147,6 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
             </div>
           ) : (
             <>
-              {/* PROMPT: progress label ("WORD 3 OF 20" or "LETTERS 5 OF 26"),
-                  the big letter fragment to use, and an instruction line
-                  (mentions 6+ letters in sixrush) */}
               <div className="prompt">
                 <small>
                   {mode === "alphabet"
@@ -2329,8 +2163,6 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
                 </p>
               </div>
 
-              {/* ANSWER FORM: text box (letters only, auto-lowercased), enter
-                  button, and a feedback line ("good word!" or an error) */}
               <form onSubmit={handleSubmit}>
                 <div className="entry">
                   <input
@@ -2355,8 +2187,6 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
             </>
           )}
 
-          {/* Alphabet mode only: A–Z grid where your collected letters are
-              highlighted */}
           {mode === "alphabet" && (
             <div className="alphabet">
               {ALPHABET.map((letter) => (
@@ -2372,31 +2202,23 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
 
           <div className="divider" />
 
-          {/* Live scoreboard: every player's progress bar and count */}
           {renderScoreboard()}
 
-          {/* Connection problem warning (only shows if polling fails) */}
           {syncError && <div className="message">{syncError}</div>}
         </div>
       )}
 
-      {/* PHASE: RACE (timed / survival). Turn-based "hot potato": one player at a
-          time holds the fragment and must answer before their clock runs out. */}
+      {/* ============ RACE (timed / hot potato) ============ */}
       {phase === "race" && isTimed && ts && (
         <div className="mp-race">
-          {/* Main clock: the current turn's countdown (timed) or the current
-              player's remaining time bank (survival), with one decimal */}
           <div className="timer">{turnLeft.toFixed(1)}s</div>
 
-          {/* Survival only: countdown to the automatic 15-second turn skip */}
           {isSurvival && (
             <div className="mp-survival-top">
               <strong>turn skips in {Math.ceil(skipLeft)}s</strong>
             </div>
           )}
 
-          {/* Last word box: who typed the most recent word and what it was, or a
-              placeholder before the first word */}
           <div className="mp-last">
             {ts.lastWord ? (
               <>
@@ -2408,9 +2230,6 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
             )}
           </div>
 
-          {/* PROMPT: the label says whose turn it is ("YOUR TURN", "<NAME>'S
-              TURN", or "YOU'RE OUT. WATCHING" if you're eliminated), then the big
-              fragment, then a hint line */}
           <div className="prompt">
             <small>
               {myTurn
@@ -2429,8 +2248,6 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
             </p>
           </div>
 
-          {/* ANSWER FORM: only appears on YOUR turn. The key resets the input box
-              each turn so it starts empty and refocused. */}
           {myTurn && (
             <form onSubmit={handleTimedSubmit}>
               <div className="entry">
@@ -2452,26 +2269,20 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
                 <button type="submit">enter</button>
               </div>
 
-              {/* Feedback line for your own answers (errors, "too late!") */}
               <div className="message">{message}</div>
             </form>
           )}
 
-          {/* Event note visible to everyone (e.g. "Sam ran out of time", "Sam is
-              out!", "Sam was skipped after 15 seconds") */}
           {ts.note && <div className="message">{ts.note}</div>}
 
           <div className="divider" />
 
-          {/* Scoreboard: each player's lives (timed) or time bank (survival) */}
           {renderTimedBoard()}
 
-          {/* Timed only (not survival): your personal A–Z bonus tracker */}
           {!isSurvival && (
             <>
               <div className="divider" />
 
-              {/* Heading with your collected-letter count (e.g. 9/26) */}
               <div className="section-heading">
                 <div>
                   <small>alphabet bonus</small>
@@ -2480,7 +2291,6 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
                 <strong>{(ts.letters[me] ?? []).length}/26</strong>
               </div>
 
-              {/* A–Z grid with your collected letters highlighted */}
               <div className="alphabet">
                 {ALPHABET.map((letter) => (
                   <span
@@ -2494,23 +2304,19 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
                 ))}
               </div>
 
-              {/* Explanation of the extra-life rule */}
               <p className="rule">
                 collect all 26 letters from your words to gain an extra life.
               </p>
             </>
           )}
 
-          {/* Connection problem warning (only shows if polling fails) */}
           {syncError && <div className="message">{syncError}</div>}
         </div>
       )}
 
-      {/* PHASE: RESULTS (a winner exists). Shows who won and the final standings. */}
+      {/* ============ RESULTS ============ */}
       {phase === "results" && winner && (
         <div className="mp-results">
-          {/* Headline: "you won!" if it's you, otherwise "game over"; then the
-              winner's name with a crown, and a line explaining how they won */}
           <div className="results-header">
             <small>{winner.player_id === me ? "you won!" : "game over"}</small>
 
@@ -2531,8 +2337,6 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
 
           <div className="divider" />
 
-          {/* Timed / survival only: summary stats (total words typed by everyone
-              and how long the game lasted) */}
           {isTimed && ts && (
             <div className="mp-stats">
               <span>
@@ -2544,14 +2348,10 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
             </div>
           )}
 
-          {/* Final standings: elimination order for timed/survival, or finish
-              order with times for the race modes */}
           {isTimed ? renderTimedBoard() : renderScoreboard()}
 
           <div className="divider" />
 
-          {/* Host gets a "play again" button that sends everyone back to the
-              lobby; everyone else sees a waiting message */}
           {isHost ? (
             <button
               type="button"
@@ -2567,13 +2367,10 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
             </p>
           )}
 
-          {/* Error message (e.g. couldn't go back to the lobby) */}
           {error && <div className="message">{error}</div>}
         </div>
       )}
 
-      {/* PHASE: RESULTS (no winner). Fallback screen, e.g. when everyone left or
-          nobody was left standing. The host still gets a way back to the lobby. */}
       {phase === "results" && !winner && (
         <div className="mp-results">
           <div className="results-header">
@@ -2581,7 +2378,6 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
             <h2>no winner</h2>
           </div>
 
-          {/* Host-only button to return to the lobby */}
           {isHost && (
             <button
               type="button"

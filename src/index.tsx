@@ -14,6 +14,9 @@ import {
 import GroupGame, { type GroupDifficulty, type PromptItem } from "./GroupGame";
 import "./styles.css";
 
+// KEEP your existing import lines at the very top of your file (react hooks,
+// DICTIONARY, Leaderboard, submitScore, etc.) and add this one:
+
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
 const DEFAULT_TIME = 10;
@@ -28,9 +31,6 @@ const COUNTER_URL =
 const COUNTER_GET_URL =
   "https://countapi.mileshilliard.com/api/v1/get/word_bomb_solo_games_7f3c9";
 
-// Reads the global "games played" total from the counter API and stores it in
-// state. It does a GET, parses the JSON, and uses data.value as a number.
-// Errors are ignored on purpose because the counter is only cosmetic.
 async function loadGamesPlayed(
   setGamesPlayed: React.Dispatch<React.SetStateAction<number>>,
 ) {
@@ -41,12 +41,9 @@ async function loadGamesPlayed(
 
     const data = await response.json();
     setGamesPlayed(Number(data.value) || 0);
-  } catch { }
+  } catch {}
 }
 
-// Adds one to the global "games played" counter. The "hit" endpoint
-// increments the count and returns the new total, which is shown in the header.
-// Failures are ignored because the counter is cosmetic.
 async function countGamePlayed(
   setGamesPlayed: React.Dispatch<React.SetStateAction<number>>,
 ) {
@@ -57,7 +54,7 @@ async function countGamePlayed(
 
     const data = await response.json();
     setGamesPlayed(Number(data.value) || 0);
-  } catch { }
+  } catch {}
 }
 
 type Difficulty = "superEasy" | "hard";
@@ -65,18 +62,17 @@ type GameMode = "timed" | "zen" | "rush" | "alphabet" | "sevenRush";
 
 const DIFFICULTY_LIMITS: Record<Difficulty, number> = {
   superEasy: 5000,
-  hard: 500,
+  hard: 300,
 };
 
-const DIFFICULTY_MAX: Record<Difficulty, number> = {
-  superEasy: Infinity,
-  hard: 2500,
-};
+function getHardMinimum() {
+  return Math.floor(Math.random() * (900 - 300 + 1)) + 300;
+}
 
 const DIFFICULTY_OPTIONS: { value: Difficulty; label: string; hint: string }[] =
   [
     { value: "superEasy", label: "easy", hint: "5,000+ words" },
-    { value: "hard", label: "hard", hint: "500–2,500 words" },
+    { value: "hard", label: "hard", hint: "300–900+ words" },
   ];
 
 const MODE_OPTIONS: { value: GameMode; label: string; hint: string }[] = [
@@ -89,10 +85,6 @@ const MODE_OPTIONS: { value: GameMode; label: string; hint: string }[] = [
 
 const TIME_OPTIONS = [5, 10, 20, 60];
 
-// Says whether a mode is scored by total elapsed time (rush, sixrush,
-// alphabet) instead of by number of words. It is a simple comparison against
-// those three mode names. The UI uses it to decide between showing a
-// stopwatch and a score.
 function isRushMode(mode: GameMode) {
   return mode === "rush" || mode === "alphabet" || mode === "sevenRush";
 }
@@ -104,23 +96,17 @@ type PromptData = {
   longExamples: string[];
 };
 
+// sixrush only uses fragments where at least this share of the difficulty's
+// word minimum comes from 6+ letter words
+// (easy: 5000 * 0.5 = 2500, hard: 300–900 * 0.5 = 150–450)
 const SEVEN_RUSH_LONG_RATIO = 0.5;
 
-// Adds a word to a list of example answers, but only if the list has fewer
-// than 12 entries and no existing example starts with the same first letter.
-// That check keeps the hints varied instead of showing 12 similar words.
 function addExample(list: string[], word: string) {
   if (list.length < 12 && !list.some((example) => example[0] === word[0])) {
     list.push(word);
   }
 }
 
-// Builds the index of every fragment (2 and 3 letter substrings) that can
-// appear as a prompt. It loops over every word in both dictionaries, slices
-// out each substring, and records per fragment: how many words contain it,
-// how many of those are 6+ letters, and some example words. A Set per word
-// stops a fragment being counted twice within the same word. It returns a Map
-// from fragment to stats and runs once at startup.
 function buildPromptData() {
   const data = new Map<string, PromptData>();
 
@@ -166,25 +152,18 @@ function buildPromptData() {
 
 const PROMPT_DATA = buildPromptData();
 
-// Returns the list of fragments allowed for a difficulty. It filters the
-// fragment index to those appearing in at least the minimum number of words
-// and no more than the difficulty's maximum (so hard excludes very common
-// fragments). In sixrush mode it also requires enough 6+ letter words, using
-// SEVEN_RUSH_LONG_RATIO of the minimum, and swaps in the long-word counts and
-// examples. minimumOverride lets pickPrompt retry with lower minimums.
 function buildPromptPool(
   difficulty: Difficulty,
   mode?: GameMode,
   minimumOverride?: number,
 ) {
   const minimum = minimumOverride ?? DIFFICULTY_LIMITS[difficulty];
-  const maximum = DIFFICULTY_MAX[difficulty];
   const sevenRush = mode === "sevenRush";
   const longMinimum = Math.ceil(minimum * SEVEN_RUSH_LONG_RATIO);
 
   return [...PROMPT_DATA.entries()]
     .filter(([, data]) => {
-      if (data.count < minimum || data.count > maximum) return false;
+      if (data.count < minimum) return false;
 
       if (sevenRush) {
         return data.longCount >= longMinimum && data.longExamples.length > 0;
@@ -199,16 +178,13 @@ function buildPromptPool(
     }));
 }
 
-// Chooses the next fragment to show. It builds the pool for the difficulty,
-// and if that pool is empty it retries with lower minimums (100, 20, 1) while
-// keeping the ceiling. If everything fails it falls back to "in". Hard mode
-// then picks uniformly at random. Easy mode weights each fragment by
-// count / 100 (between 1 and 20 copies in a list) so common fragments appear
-// more often, then picks a random entry from that list.
 function pickPrompt(difficulty: Difficulty, mode?: GameMode) {
-  const minimum = DIFFICULTY_LIMITS[difficulty];
+  const minimum =
+    difficulty === "hard" ? getHardMinimum() : DIFFICULTY_LIMITS[difficulty];
 
-  const minimumsToTry = [minimum, 100, 20, 1];
+  // If the pool is empty (e.g. sixrush on hard with a high random minimum),
+  // step the minimum down instead of falling straight to "in".
+  const minimumsToTry = [minimum, DIFFICULTY_LIMITS[difficulty], 100, 20, 1];
 
   let pool: ReturnType<typeof buildPromptPool> = [];
 
@@ -218,11 +194,10 @@ function pickPrompt(difficulty: Difficulty, mode?: GameMode) {
   }
 
   if (!pool.length) {
-    return { fragment: "in", examples: ["inside", "winter"] };
-  }
-
-  if (difficulty === "hard") {
-    return pool[Math.floor(Math.random() * pool.length)];
+    return {
+      fragment: "in",
+      examples: ["inside", "winter"],
+    };
   }
 
   const weightedPool: typeof pool = [];
@@ -238,10 +213,6 @@ function pickPrompt(difficulty: Difficulty, mode?: GameMode) {
   return weightedPool[Math.floor(Math.random() * weightedPool.length)];
 }
 
-// Builds the list of prompts handed to multiplayer. It calls pickPrompt
-// repeatedly and skips fragments already chosen so players get distinct
-// letters. A guard counter stops the loop if unique fragments run out, and a
-// second loop then fills the rest of the list with repeats.
 function makeGroupPrompts(count: number, difficulty: GroupDifficulty) {
   const seen = new Set<string>();
   const out: PromptItem[] = [];
@@ -262,9 +233,7 @@ function makeGroupPrompts(count: number, difficulty: GroupDifficulty) {
   return out;
 }
 
-// Debug helper exposed as window.logPromptPools(). For every difficulty and
-// for rush versus sixrush, it builds the prompt pool and prints a table of
-// how many fragments qualify, which shows whether a pool is too small.
+// paste in the browser console via window.logPromptPools() to see pool sizes
 function logPromptPools() {
   const modes: GameMode[] = ["rush", "sevenRush"];
   const rows: Record<string, number | string>[] = [];
@@ -287,9 +256,6 @@ if (typeof window !== "undefined") {
     logPromptPools;
 }
 
-// Picks up to two example words to show after a missed prompt. If there are
-// two or fewer it returns them all. Otherwise it shuffles a copy with a
-// random sort and takes the first two.
 function getRandomExamples(examples: string[]) {
   if (examples.length <= 2) {
     return [...examples];
@@ -300,10 +266,6 @@ function getRandomExamples(examples: string[]) {
   return shuffled.slice(0, 2);
 }
 
-// The whole solo game. It holds all game state (mode, difficulty, prompt,
-// score, timers, modals, leaderboard data) and renders one of three views:
-// the start screen, the active game, or the results screen. The multiplayer
-// screen is a separate component that this one swaps in.
 export default function App() {
   const [screen, setScreen] = useState<"solo" | "group">("solo");
   const [difficulty, setDifficulty] = useState<Difficulty>("superEasy");
@@ -343,6 +305,8 @@ export default function App() {
 
   const [promptExamples, setPromptExamples] = useState(initialPrompt.examples);
 
+  // bumps every time a new prompt is shown so the countdown restarts even if
+  // the same fragment and the same time value come up twice in a row
   const [promptNonce, setPromptNonce] = useState(0);
 
   const [started, setStarted] = useState(false);
@@ -362,6 +326,8 @@ export default function App() {
 
   const [gamesPlayed, setGamesPlayed] = useState(0);
   const [showRules, setShowRules] = useState(false);
+
+  const countedInitialGame = useRef(false);
 
   const [time, setTime] = useState(DEFAULT_TIME);
 
@@ -386,14 +352,10 @@ export default function App() {
     }[]
   >([]);
 
-  // Effect: loads the global games-played counter once when the page mounts.
   useEffect(() => {
     loadGamesPlayed(setGamesPlayed);
   }, []);
 
-  // Effect: runs the stopwatch for rush, sixrush and alphabet. While a game is
-  // running it recomputes the elapsed seconds from the saved start timestamp
-  // every 100 ms, and clears the interval when the game ends or settings change.
   useEffect(() => {
     if (
       gameOver ||
@@ -416,10 +378,7 @@ export default function App() {
     return () => window.clearInterval(id);
   }, [gameOver, gameMode, rushStartTime]);
 
-  // Effect: the per-word countdown in timed mode. It schedules a one second
-  // timeout that lowers `time` by one. Each change to `time` re-runs the
-  // effect and schedules the next tick. promptNonce is a dependency so the
-  // countdown restarts when a new prompt appears, even if the time is the same.
+  // countdown: ticks `time` down once per second in timed mode
   useEffect(() => {
     if (!started || gameOver || gameMode !== "timed" || time <= 0) return;
 
@@ -430,11 +389,7 @@ export default function App() {
     return () => window.clearTimeout(id);
   }, [started, gameOver, gameMode, time, promptNonce]);
 
-  // Effect: handles running out of time in timed mode. When `time` reaches 0
-  // it records the missed prompt with two example answers, shows a message,
-  // and takes away a life. If no lives remain the game ends. Otherwise it picks
-  // a new prompt and resets the clock, using the shorter time once the
-  // speed-up threshold has been reached.
+  // time ran out: lose a life, show what could have been played, move on
   useEffect(() => {
     if (!started || gameOver || gameMode !== "timed" || time !== 0) {
       return;
@@ -495,14 +450,6 @@ export default function App() {
     shortenTimed,
   ]);
 
-  // Handles the player pressing enter. It validates the word in order: minimum
-  // length (6 in sixrush), letters only, present in a dictionary, contains the
-  // fragment, and not already used, showing a message for the first failure. On
-  // success it records the answer time, adds the word to the used set, collects
-  // its letters and increments the score. It then checks mode-specific end
-  // conditions (10 words for rush and sixrush, 26 letters for alphabet). If the
-  // game continues it picks the next prompt, resets the timer, and awards an
-  // extra life in timed mode when all 26 letters have been collected.
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
 
@@ -621,9 +568,6 @@ export default function App() {
     }
   };
 
-  // Returns to the start screen when the title is clicked. It turns off the
-  // started and game-over flags and clears the input, used words, collected
-  // letters, score and rush timers, so the next game starts from a clean slate.
   const goToStart = () => {
     setStarted(false);
     setGameOver(false);
@@ -638,28 +582,16 @@ export default function App() {
     setRushStartTime(null);
   };
 
-  // Ends a zen game on demand. Zen has no timer or lives, so this button is
-  // the only way to finish it. It does nothing in other modes or if the game
-  // is already over.
   const finishGame = () => {
     if (gameMode !== "zen" || gameOver) return;
 
     setGameOver(true);
   };
 
-  // Puts the cursor in the word box. It waits one tick with setTimeout so the
-  // input exists after React has finished rendering, then calls focus on the
-  // stored input reference.
   const focusWordInput = () => {
     window.setTimeout(() => wordInputRef.current?.focus(), 0);
   };
 
-  // Begins a new game with the current settings. It increments the global
-  // counter, creates a new unique run id for the leaderboard, and clears any
-  // pending submit modal. It then picks the first prompt, resets score, lives,
-  // used words, letters, answer times and missed prompts, sets the countdown for
-  // timed mode, and flips the UI into the started state. For rush-style modes
-  // it also records the start timestamp so the stopwatch can run.
   const startGame = () => {
     countGamePlayed(setGamesPlayed);
 
@@ -710,12 +642,6 @@ export default function App() {
     }
   };
 
-  // Runs when the player submits their name and color in the leaderboard
-  // modal. It saves the pending run with that name, then fetches the run's
-  // all-time and daily ranks in parallel (only for boards it qualified for).
-  // Finally it switches the UI to that run's mode and difficulty, stores the
-  // ranks so the matching rows get highlighted, bumps the refresh key so the
-  // boards reload, and closes the modal.
   const handleLeaderboardSubmit = async (name: string, color: string) => {
     if (!pendingRun) return;
 
@@ -748,18 +674,11 @@ export default function App() {
     setPendingRun(null);
   };
 
-  // Restarts the game with the same settings. It calls startGame and then
-  // focuses the word box. The restart and play-again buttons use it.
   const reset = () => {
     startGame();
     focusWordInput();
   };
 
-  // Effect: runs when a ranked game ends. It converts the result to a final
-  // score (milliseconds for rush-style modes, word count for timed), clears the
-  // run id so it only runs once, and asks the backend whether the score would
-  // make the all-time or daily board. If it qualifies it opens the name modal.
-  // If not, it saves the score as "anonymous" so percentiles stay accurate.
   useEffect(() => {
     if (
       !gameOver ||
@@ -832,10 +751,6 @@ export default function App() {
     rushTotalTime,
   ]);
 
-  // Effect: runs when a ranked game ends and fetches the "better than X% of
-  // runs" figure. It computes the same final score as above, shows a loading
-  // state, asks the backend for the percentile and sample size, stores them,
-  // and clears the loading flag whether the request succeeds or fails.
   useEffect(() => {
     if (
       !gameOver ||
@@ -895,11 +810,6 @@ export default function App() {
     rushTotalTime,
   ]);
 
-  // Effect: lets the spacebar start or restart a game. It attaches a keydown
-  // listener on the window (solo screen only) and ignores held keys, open
-  // modals, and key presses made while focus is in a text field or button. When
-  // the game is not running it prevents the page from scrolling and calls
-  // startGame. The listener is removed in the cleanup function.
   useEffect(() => {
     if (screen !== "solo") return;
 
@@ -949,9 +859,6 @@ export default function App() {
       ? answerTimes.reduce((sum, value) => sum + value, 0) / answerTimes.length
       : 0;
 
-  // Renders the difficulty picker. It maps over DIFFICULTY_OPTIONS to make one
-  // button each, highlights the selected one, and updates difficulty on click.
-  // It is a function so the start screen and results screen can reuse it.
   const renderDifficulty = () => (
     <div className="setting">
       <small>difficulty</small>
@@ -977,10 +884,6 @@ export default function App() {
     </div>
   );
 
-  // Renders the mode picker and the multiplayer button. Buttons sit on a
-  // six-column grid; the first two span three columns and the rest span two,
-  // which gives a wide top row and a narrower second row. The multiplayer
-  // button switches the app to the group screen.
   const renderMode = () => (
     <div className="setting">
       <small>mode</small>
@@ -1019,9 +922,6 @@ export default function App() {
     </div>
   );
 
-  // Renders the lives picker for timed mode. Clicking a number sets the
-  // starting lives and also switches the mode to timed, since the setting only
-  // matters there.
   const renderTimedLives = () => (
     <div className="setting">
       <small>lives</small>
@@ -1048,9 +948,6 @@ export default function App() {
     </div>
   );
 
-  // Renders the on/off toggle for the timed-mode speed-up. Clicking it flips
-  // shortenTimed, which controls whether the per-word time drops to 5 seconds
-  // after 20 prompts.
   const renderTimedSpeedup = () => (
     <div className="setting">
       <small>speed up after</small>
@@ -1068,8 +965,6 @@ export default function App() {
     </div>
   );
 
-  // Renders the seconds-per-word picker for timed mode. Choosing a value sets
-  // roundTime and also switches the mode to timed.
   const renderTime = () => (
     <div className="setting">
       <small>time per word</small>
@@ -1411,9 +1306,9 @@ export default function App() {
             <div className="results-header">
               <small>
                 {gameMode === "zen" ||
-                  gameMode === "rush" ||
-                  gameMode === "alphabet" ||
-                  gameMode === "sevenRush"
+                gameMode === "rush" ||
+                gameMode === "alphabet" ||
+                gameMode === "sevenRush"
                   ? "run complete"
                   : "game over"}
               </small>
