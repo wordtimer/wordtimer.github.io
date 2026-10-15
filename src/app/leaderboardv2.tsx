@@ -4,7 +4,14 @@ const SUPABASE_URL = "https://frnjbjhigceptzwtmyax.supabase.co";
 const SUPABASE_KEY = "sb_publishable_mB2ZU7RWDpQdPA-mIh8tKw_oxs1_2_B";
 const MAX_NAME_LENGTH = 15;
 
-export type RankedMode = "timed" | "rush" | "alphabet" | "sevenRush";
+export type RankedMode =
+  | "timed"
+  | "rush"
+  | "alphabet"
+  | "sevenRush"
+  | "startEnd"
+  | "mathEasy"
+  | "mathMed";
 export type Period = "alltime" | "daily";
 
 export type LeaderboardEntry = {
@@ -24,6 +31,9 @@ const MODE_LABELS: Record<RankedMode, string> = {
   rush: "rush",
   alphabet: "alphabet",
   sevenRush: "sixrush",
+  startEnd: "start/end",
+  mathEasy: "math easy",
+  mathMed: "math hard",
 };
 
 export function isRankedMode(mode: string): mode is RankedMode {
@@ -31,7 +41,10 @@ export function isRankedMode(mode: string): mode is RankedMode {
     mode === "timed" ||
     mode === "rush" ||
     mode === "alphabet" ||
-    mode === "sevenRush"
+    mode === "sevenRush" ||
+    mode === "startEnd" ||
+    mode === "mathEasy" ||
+    mode === "mathMed"
   );
 }
 
@@ -159,6 +172,14 @@ function formatScore(mode: RankedMode, score: number) {
   return `${(score / 1000).toFixed(2)}s`;
 }
 
+function formatModeTitle(mode: RankedMode, difficulty: string) {
+  if (mode === "startEnd" || mode === "mathEasy" || mode === "mathMed") {
+    return MODE_LABELS[mode];
+  }
+
+  return `${MODE_LABELS[mode]} - ${DIFFICULTY_LABELS[difficulty] ?? difficulty}`;
+}
+
 type LeaderboardProps = {
   mode: RankedMode;
   difficulty: string;
@@ -208,9 +229,7 @@ export function Leaderboard({
       <div className="section-heading">
         <div>
           <small>{period === "daily" ? "daily" : "all-time"}</small>
-          <h2>
-            {MODE_LABELS[mode]} - {DIFFICULTY_LABELS[difficulty] ?? difficulty}
-          </h2>
+          <h2>{formatModeTitle(mode, difficulty)}</h2>
         </div>
       </div>
 
@@ -315,7 +334,7 @@ export function LeaderboardSubmitModal({
         <h2>you made the leaderboard!!!</h2>
 
         <p>
-          {MODE_LABELS[mode]} - {DIFFICULTY_LABELS[difficulty] ?? difficulty}
+          {formatModeTitle(mode, difficulty)}
           {mode === "timed" && roundTime !== null ? ` - ${roundTime}s` : ""}
         </p>
 

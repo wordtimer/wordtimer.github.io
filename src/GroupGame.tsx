@@ -20,7 +20,7 @@ const COUNTER_HIT_URL =
 const PLAYER_ID_KEY = "wordtimer_group_player_id";
 const NAME_KEY = "wordtimer_group_name";
 
-export const TARGET_WORDS = 20; // words needed to finish rush / sixrush
+export const TARGET_WORDS = 20; // words needed to finish rush / sixrush / startEnd / math
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 const ALPHABET_TARGET = ALPHABET.length; // 26 letters to finish alphabet
 const ROOM_CODE_LENGTH = 4;
@@ -112,9 +112,22 @@ async function syncClock(samples = 1) {
 
 export type GroupDifficulty = "superEasy" | "hard";
 
-// rush / sixrush / alphabet are races. timed is hot potato. survival is shared-clock elimination.
-export type GroupMode = "rush" | "sixrush" | "alphabet" | "timed" | "survival";
+// rush / sixrush / alphabet / startEnd / math are races. timed is hot potato.
+// survival is shared-clock elimination. startEnd matches the first and last
+// letters of a word; math answers arithmetic questions with whole numbers.
+export type GroupMode =
+  | "rush"
+  | "sixrush"
+  | "alphabet"
+  | "timed"
+  | "survival"
+  | "startEnd"
+  | "math";
 
+// PromptItem.fragment meaning depends on the mode:
+//   word modes: the letters to include ("ing")
+//   startEnd:   "start-end" ("b-a")
+//   math modes: the problem text ("7 × 8"), and examples[0] is the answer ("56")
 export type PromptItem = {
   fragment: string;
   examples: string[];
@@ -154,7 +167,7 @@ type Player = {
   room_code: string;
   display_name: string;
   joined_at: string;
-  progress: number; // rush/sixrush: words. alphabet: letters collected.
+  progress: number; // race modes: words/problems. alphabet: letters collected.
   finished_at: string | null;
 };
 
@@ -199,28 +212,62 @@ const MODE_OPTIONS: { value: GroupMode; label: string; hint: string }[] = [
     label: "survival",
     hint: "1 life, 60s each, 15s turns",
   },
+  {
+    value: "startEnd",
+    label: "startend",
+    hint: `${TARGET_WORDS} words, given start + end`,
+  },
+  {
+    value: "math",
+    label: "math",
+    hint: `${TARGET_WORDS} arithmetic problems`,
+  },
 ];
+
+// Difficulty hints for startEnd (the fragment pools are sized differently from
+// the normal word modes).
+const START_END_HINTS: Record<GroupDifficulty, string> = {
+  superEasy: "50–500 matching words",
+  hard: "500+ matching words",
+};
 
 /* ==========================================================================
  * GAME RULE HELPERS (pure)
  * ========================================================================== */
 
+// Math is a race mode whose answer is a whole number.
+const isMathMode = (mode: GroupMode): mode is "math" => mode === "math";
+
 // targetOf(mode): takes a GroupMode, returns the progress a player needs to
-// finish a race: 26 for alphabet (letters), 20 for everything else (words).
+// finish a race: 26 for alphabet (letters), 20 for everything else (words or
+// problems).
 // How much "progress" a player needs to finish a race mode.
 const targetOf = (mode: GroupMode) =>
   mode === "alphabet" ? ALPHABET_TARGET : TARGET_WORDS;
 
 // promptCountFor(mode): takes a GroupMode, returns how many prompts to
-// generate. Rush and sixrush need exactly 20. Alphabet, timed and survival
-// have no fixed length, so they get a pool of 60 that wraps back to the start
-// (via modulo) if it ever runs out.
+// generate. Rush, sixrush, startEnd and the math modes need exactly 20.
+// Alphabet, timed and survival have no fixed length, so they get a pool of 60
+// that wraps back to the start (via modulo) if it ever runs out.
 // How many fragments to generate. Alphabet, timed, and survival have no fixed length,
 // so they get a pool that wraps around if it ever runs out.
 const promptCountFor = (mode: GroupMode) =>
   mode === "alphabet" || mode === "timed" || mode === "survival"
     ? PROMPT_POOL_SIZE
     : TARGET_WORDS;
+
+// displayPrompt(fragment, mode): takes a prompt fragment and the mode, returns
+// the text to show in big letters. startEnd fragments ("b-a") become "B … A";
+// math problems and normal fragments are just uppercased.
+function displayPrompt(fragment: string, mode: GroupMode) {
+  if (mode === "startEnd") {
+    const [start, end] = fragment.split("-");
+
+    return `${start.toUpperCase()} … ${(end ?? "").toUpperCase()}`;
+  }
+
+  return fragment.toUpperCase();
+}
 
 // checkWord(word, fragment, mode, isValidWord, used): takes the typed word
 // (already trimmed and lowercased), the required fragment, the mode, a
@@ -257,6 +304,196 @@ function checkWord(
   return null;
 }
 
+// checkStartEnd(word, fragment, isValidWord, used): takes the typed word, a
+// one-letter "start-end" fragment, the dictionary check and the used-words set.
+// Answers must be at least 3 letters long, start and end with the given letters,
+// exist in the dictionary, and not have been used already.
+function checkStartEnd(
+  word: string,
+  fragment: string,
+  isValidWord: (w: string) => boolean,
+  used: { has: (w: string) => boolean },
+): string | null {
+  const [start, end = ""] = fragment.split("-");
+  const minLength = Math.max(start.length + end.length + 1, 3);
+
+  if (!/^[a-z]+$/.test(word)) return "use letters only.";
+
+  if (word.length < minLength) {
+    return "your word must be at least 3 letters long.";
+  }
+
+  if (!word.startsWith(start)) {
+    return `your word must start with "${start.toUpperCase()}".`;
+  }
+
+  if (!word.endsWith(end)) {
+    return `your word must end with "${end.toUpperCase()}".`;
+  }
+
+  if (!isValidWord(word)) return "that word isn't in the dictionary.";
+
+  if (used.has(word)) return "you already used that word.";
+
+  return null;
+}
+
+// checkMath(answer, prompt): takes the typed answer and the PromptItem whose
+// examples[0] is the correct answer. Returns an error message, or null if the
+// answer is right. Only whole numbers are accepted.
+function checkMath(answer: string, prompt: PromptItem): string | null {
+  if (!/^\d+$/.test(answer)) return "enter a whole number.";
+
+  if (Number(answer) !== Number(prompt.examples[0])) {
+    return "not quite, try again.";
+  }
+
+  return null;
+}
+
+// Generate math prompts for multiplayer with the same difficulty rules as solo.
+// Easy answers can be 0–99; hard keeps the former mathMed ranges.
+function randomMathInt(min: number, max: number) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function makeMathPrompt(
+  difficulty: GroupDifficulty,
+  usedExpressions: Set<string> = new Set(),
+): PromptItem {
+  const applyOperation = (a: number, b: number, operation: number) => {
+    if (operation === 0) return { value: a + b, symbol: "+" };
+    if (operation === 1) return { value: a - b, symbol: "−" };
+    return { value: a * b, symbol: "×" };
+  };
+
+  for (let attempt = 0; attempt < 2000; attempt++) {
+    let answer = 0;
+    let expression = "";
+    const operation = randomMathInt(0, 3);
+    const useTwoSteps = Math.random() < 0.5;
+
+    if (useTwoSteps && operation !== 3) {
+      const min = difficulty === "superEasy" ? 1 : 12;
+      const max = difficulty === "superEasy" ? 20 : 45;
+      const a = randomMathInt(min, max);
+      const b = randomMathInt(min, max);
+      const c = randomMathInt(min, max);
+      const firstOp = randomMathInt(0, 2);
+      const secondOp = randomMathInt(0, 2);
+      const first = applyOperation(a, b, firstOp);
+      const second = applyOperation(first.value, c, secondOp);
+      answer = second.value;
+      const limit = difficulty === "superEasy" ? 99 : 500;
+      if (
+        answer < 0 ||
+        answer > limit ||
+        first.value < 0 ||
+        first.value > limit
+      )
+        continue;
+      expression = `(${a} ${first.symbol} ${b}) ${second.symbol} ${c}`;
+    } else if (difficulty === "superEasy") {
+      if (operation === 0) {
+        const a = randomMathInt(10, 89);
+        const b = randomMathInt(1, 99 - a);
+        answer = a + b;
+        expression = `${a} + ${b}`;
+      } else if (operation === 1) {
+        const a = randomMathInt(10, 99);
+        const b = randomMathInt(1, a - 1);
+        answer = a - b;
+        expression = `${a} − ${b}`;
+      } else if (operation === 2) {
+        const a = randomMathInt(2, 12);
+        const b = randomMathInt(2, Math.min(12, Math.floor(99 / a)));
+        answer = a * b;
+        expression = `${a} × ${b}`;
+      } else {
+        const a = randomMathInt(2, 9);
+        const b = randomMathInt(2, 6);
+        answer = a ** b;
+        if (answer > 99) continue;
+        expression = `${a}^${b}`;
+      }
+    } else if (operation === 0) {
+      const a = randomMathInt(25, 199);
+      const b = randomMathInt(15, 199);
+      answer = a + b;
+      if (answer > 500) continue;
+      expression = `${a} + ${b}`;
+    } else if (operation === 1) {
+      const a = randomMathInt(30, 250);
+      const b = randomMathInt(10, a - 1);
+      answer = a - b;
+      expression = `${a} − ${b}`;
+    } else if (operation === 2) {
+      const a = randomMathInt(12, 25);
+      const b = randomMathInt(3, 18);
+      answer = a * b;
+      if (answer > 500) continue;
+      expression = `${a} × ${b}`;
+    } else {
+      const a = randomMathInt(3, 15);
+      const b = randomMathInt(2, 5);
+      answer = a ** b;
+      if (answer > 500) continue;
+      expression = `${a}^${b}`;
+    }
+
+    if (usedExpressions.has(expression)) continue;
+    return { fragment: expression, examples: [String(answer)] };
+  }
+
+  for (let a = 1; a <= 9; a++) {
+    for (let b = 1; b <= 9; b++) {
+      const expression = `${a} + ${b}`;
+      const answer = a + b;
+      if (
+        answer <= (difficulty === "superEasy" ? 99 : 500) &&
+        !usedExpressions.has(expression)
+      ) {
+        return { fragment: expression, examples: [String(answer)] };
+      }
+    }
+  }
+  return { fragment: "1 + 1", examples: ["2"] };
+}
+
+function makeMathPrompts(
+  count: number,
+  difficulty: GroupDifficulty,
+): PromptItem[] {
+  const usedExpressions = new Set<string>();
+  const prompts: PromptItem[] = [];
+  while (prompts.length < count) {
+    const prompt = makeMathPrompt(difficulty, usedExpressions);
+    usedExpressions.add(prompt.fragment);
+    prompts.push(prompt);
+  }
+  return prompts;
+}
+
+// checkAnswer(word, prompt, mode, isValidWord, used): the single entry point
+// for race-mode answers. Sends math modes to checkMath, startEnd to
+// checkStartEnd and everything else to checkWord. Returns an error message or
+// null.
+function checkAnswer(
+  word: string,
+  prompt: PromptItem,
+  mode: GroupMode,
+  isValidWord: (w: string) => boolean,
+  used: { has: (w: string) => boolean },
+): string | null {
+  if (isMathMode(mode)) return checkMath(word, prompt);
+
+  if (mode === "startEnd") {
+    return checkStartEnd(word, prompt.fragment, isValidWord, used);
+  }
+
+  return checkWord(word, prompt.fragment, mode, isValidWord, used);
+}
+
 /* ---- hot potato transitions ---------------------------------------------- */
 
 // addLetters(word, current): takes a word and a player's collected-letter
@@ -280,7 +517,7 @@ const addLetters = (word: string, current: string[]) => {
 // (NOT from whichever client happens to be solving).
 const timedLimitFor = (ts: TurnState) =>
   ts.shorten &&
-    ts.totalWords >= ts.order.length * TIMED_SHORT_AFTER_WORDS_PER_PLAYER
+  ts.totalWords >= ts.order.length * TIMED_SHORT_AFTER_WORDS_PER_PLAYER
     ? TIMED_SHORT_TIME_DEFAULT
     : ts.limit;
 
@@ -378,8 +615,6 @@ function recordAcceptedWord(
   let after = addLetters(word, before);
   const lives = { ...ts.lives };
   let note = "";
-
-
 
   letters[playerId] = after;
 
@@ -921,8 +1156,17 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
   const mode: GroupMode = game?.game_mode ?? "rush";
   const isTimed = mode === "timed" || mode === "survival";
   const isSurvival = mode === "survival";
+  const isMath = isMathMode(mode);
   const target = targetOf(mode);
   const ts = game?.turn_state ?? null;
+
+  // unitName: what a player is answering in race modes ("words" or "problems"),
+  // used in the goal and results text.
+  const unitName = isMath ? "problems" : "words";
+
+  // inputFilter: characters allowed in the answer box. Math modes take digits
+  // only; every other mode takes letters only.
+  const inputFilter = isMath ? /[^0-9]/g : /[^a-zA-Z]/g;
 
   // queueSave(fn): takes a function that returns a Promise, returns nothing.
   // Chains fn onto saveChain so progress saves run strictly one after another;
@@ -930,7 +1174,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
   // and does not block later saves.
   const queueSave = (fn: () => Promise<unknown>) => {
     saveChain.current = saveChain.current
-      .catch(() => { })
+      .catch(() => {})
       .then(fn)
       .catch((e) => console.error("SAVE ERROR:", e));
   };
@@ -1011,10 +1255,10 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
         // Ignore a stale poll that started before one of our own turn writes.
         setGame((cur) =>
           cur &&
-            cur.status === "playing" &&
-            g.status === "playing" &&
-            g.game_number === cur.game_number &&
-            g.turn_number < cur.turn_number
+          cur.status === "playing" &&
+          g.status === "playing" &&
+          g.game_number === cur.game_number &&
+          g.turn_number < cur.turn_number
             ? cur
             : g,
         );
@@ -1051,7 +1295,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
         method: "DELETE",
         keepalive: true,
         headers: AUTH_HEADERS,
-      }).catch(() => { });
+      }).catch(() => {});
     };
 
     window.addEventListener("pagehide", onHide);
@@ -1306,8 +1550,8 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
 
   const timedAliveCount = ts
     ? ts.order.filter((id) =>
-      isSurvival ? (ts.remaining[id] ?? 0) > 0 : (ts.lives[id] ?? 0) > 0,
-    ).length
+        isSurvival ? (ts.remaining[id] ?? 0) > 0 : (ts.lives[id] ?? 0) > 0,
+      ).length
     : 0;
 
   const timedOver = isTimed && !!ts && timedAliveCount <= 1;
@@ -1317,8 +1561,8 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     () =>
       ts
         ? ts.order
-          .map((id) => playerById.get(id))
-          .filter((p): p is Player => !!p)
+            .map((id) => playerById.get(id))
+            .filter((p): p is Player => !!p)
         : [],
     [ts, playerById],
   );
@@ -1707,11 +1951,9 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     setError("");
 
     try {
-      const prompts = makePrompts(
-        promptCountFor(modeChoice),
-        difficulty,
-        modeChoice,
-      );
+      const prompts = isMathMode(modeChoice)
+        ? makeMathPrompts(promptCountFor(modeChoice), difficulty)
+        : makePrompts(promptCountFor(modeChoice), difficulty, modeChoice);
 
       // Do the slow network work BEFORE stamping the start time, so the
       // countdown isn't eaten by it.
@@ -1815,15 +2057,16 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     }
   };
 
-  // handleSubmit(event): takes a form event, returns nothing. Word submission
-  // for race modes (rush, sixrush, alphabet). Ignored before the start time or
-  // once you have finished. Validates with checkWord against your own position
-  // in the prompt list. If accepted it updates your word index, used words and
-  // letters locally and immediately, then saves progress through the save
-  // queue. When you finish, progress is saved first and the finish RPC second,
-  // because the server only stamps finished_at if progress already reached the
-  // target.
-  // SUBMIT A WORD (rush / sixrush / alphabet)
+  // handleSubmit(event): takes a form event, returns nothing. Answer
+  // submission for race modes (rush, sixrush, alphabet, startEnd and the math
+  // modes). Ignored before the start time or once you have finished. Validates
+  // with checkAnswer against your own position in the prompt list (a word, a
+  // start/end word or a math answer depending on the mode). If accepted it
+  // updates your index, used words and letters locally and immediately, then
+  // saves progress through the save queue. When you finish, progress is saved
+  // first and the finish RPC second, because the server only stamps finished_at
+  // if progress already reached the target.
+  // SUBMIT AN ANSWER (rush / sixrush / alphabet / startEnd / math)
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
 
@@ -1835,13 +2078,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
 
     const word = input.trim().toLowerCase();
 
-    const problem = checkWord(
-      word,
-      currentPrompt.fragment,
-      mode,
-      isValidWord,
-      used,
-    );
+    const problem = checkAnswer(word, currentPrompt, mode, isValidWord, used);
 
     if (problem) {
       setMessage(problem);
@@ -1869,7 +2106,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     setIndex(nextIndex);
     setLetters(nextLetters);
     setInput("");
-    setMessage(justFinished ? "" : "good word!");
+    setMessage(justFinished ? "" : isMath ? "correct!" : "good word!");
 
     if (justFinished) {
       // Progress must be written BEFORE the finish RPC, otherwise the server
@@ -2081,13 +2318,14 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
               <div className="mp-bar">
                 <i
                   style={{
-                    width: `${isSurvival
+                    width: `${
+                      isSurvival
                         ? Math.max(
-                          0,
-                          Math.min(100, (remaining / SURVIVAL_TIME) * 100),
-                        )
+                            0,
+                            Math.min(100, (remaining / SURVIVAL_TIME) * 100),
+                          )
                         : Math.max(0, Math.min(100, (lives / maxLives) * 100))
-                      }%`,
+                    }%`,
                   }}
                 />
               </div>
@@ -2110,8 +2348,8 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
   };
 
   // goalText: the one-line goal shown on the countdown screen, chosen by mode
-  // (survival, timed, or race with first/last finish mode and alphabet or word
-  // target).
+  // (survival, timed, or race with first/last finish mode and alphabet or
+  // word/problem target).
   const goalText = isSurvival
     ? "one life each. 60 seconds total per player. turns auto-skip after 15 seconds."
     : isTimed
@@ -2119,10 +2357,10 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
       : game?.finish_mode === "last"
         ? mode === "alphabet"
           ? "everyone must collect all 26 letters"
-          : `everyone must reach ${TARGET_WORDS} words`
+          : `everyone must reach ${TARGET_WORDS} ${unitName}`
         : mode === "alphabet"
           ? "first to collect all 26 letters wins"
-          : `first to ${TARGET_WORDS} words wins`;
+          : `first to ${TARGET_WORDS} ${unitName} wins`;
 
   /* ------------------------------------------------------------------------
    * RENDER
@@ -2280,8 +2518,9 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
           {/* Host sees settings and the start button; everyone else sees a waiting message */}
           {isHost ? (
             <>
-              {/* MODE PICKER (host only): rush, sixrush, alphabet, timed, survival
-                  in a 2-column grid, each with a short description */}
+              {/* MODE PICKER (host only): rush, sixrush, alphabet, timed, survival,
+                  startend and the three math modes in a 2-column grid, each with
+                  a short description */}
               <div className="setting">
                 <small>mode</small>
 
@@ -2425,50 +2664,64 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
                 </div>
               )}
 
-              <div className="divider" />
+              {/* DIFFICULTY PICKER (host only): math uses this same easy/hard
+                  choice to control question difficulty; word modes use their
+                  fragment pools, and start/end has its own pool-size hints. */}
+              {
+                <>
+                  <div className="divider" />
 
-              {/* DIFFICULTY PICKER (host only): easy or hard */}
-              <div className="setting">
-                <small>difficulty</small>
+                  <div className="setting">
+                    <small>difficulty</small>
 
-                <div
-                  className="option-grid"
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(2, 1fr)",
-                  }}
-                >
-                  {(
-                    [
-                      {
-                        value: "superEasy",
-                        label: "easy",
-                        hint: "5,000+ words",
-                      },
-                      {
-                        value: "hard",
-                        label: "hard",
-                        hint: "500–2,500 words",
-                      },
-                    ] as const
-                  ).map((option) => (
-                    <button
-                      type="button"
-                      key={option.value}
-                      className={
-                        difficulty === option.value
-                          ? "option selected"
-                          : "option"
-                      }
-                      onClick={() => setDifficulty(option.value)}
+                    <div
+                      className="option-grid"
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(2, 1fr)",
+                      }}
                     >
-                      <strong>{option.label}</strong>
+                      {(
+                        [
+                          {
+                            value: "superEasy",
+                            label: "easy",
+                            hint: "5,000+ words",
+                          },
+                          {
+                            value: "hard",
+                            label: "hard",
+                            hint: "500–2,500 words",
+                          },
+                        ] as const
+                      ).map((option) => (
+                        <button
+                          type="button"
+                          key={option.value}
+                          className={
+                            difficulty === option.value
+                              ? "option selected"
+                              : "option"
+                          }
+                          onClick={() => setDifficulty(option.value)}
+                        >
+                          <strong>{option.label}</strong>
 
-                      <span>{option.hint}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
+                          <span>
+                            {isMathMode(modeChoice)
+                              ? option.value === "superEasy"
+                                ? "answers up to 99"
+                                : "harder calculations"
+                              : modeChoice === "startEnd"
+                                ? START_END_HINTS[option.value]
+                                : option.hint}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              }
 
               {/* START BUTTON (host only): disabled until 2+ players have joined;
                   the label reads "waiting for players (1/2)" until then */}
@@ -2513,9 +2766,10 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
         </div>
       )}
 
-      {/* ============ RACE (rush / sixrush / alphabet) ============ */}
-      {/* RACE (rush / sixrush / alphabet): everyone types at their own pace
-          through the same prompt list; the scoreboard shows live progress. */}
+      {/* ============ RACE (rush / sixrush / alphabet / startEnd / math) ============ */}
+      {/* RACE (rush / sixrush / alphabet / startEnd / math): everyone answers at
+          their own pace through the same prompt list; the scoreboard shows live
+          progress. */}
       {phase === "race" && !isTimed && (
         <div className="mp-race">
           {/* Shared race stopwatch (seconds since the start, two decimals) */}
@@ -2539,26 +2793,36 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
             </div>
           ) : (
             <>
-              {/* PROMPT: progress label ("WORD 3 OF 20" / "LETTERS 5 OF 26"),
-                  the big fragment, and an instruction line (6+ letters in sixrush) */}
+              {/* PROMPT: progress label ("WORD 3 OF 20" / "PROBLEM 3 OF 20" /
+                  "LETTERS 5 OF 26"), the big fragment (or "ST … ED" / the math
+                  problem), and an instruction line */}
               <div className="prompt">
                 <small>
                   {mode === "alphabet"
                     ? `LETTERS ${letters.size} OF ${ALPHABET_TARGET}`
-                    : `WORD ${index + 1} OF ${TARGET_WORDS}`}
+                    : `${isMath ? "PROBLEM" : "WORD"} ${index + 1} OF ${TARGET_WORDS}`}
                 </small>
 
-                <strong>{currentPrompt?.fragment.toUpperCase()}</strong>
+                <strong>
+                  {currentPrompt
+                    ? displayPrompt(currentPrompt.fragment, mode)
+                    : ""}
+                </strong>
 
                 <p>
-                  {mode === "sixrush"
-                    ? "put these letters in your word. 6+ letters."
-                    : "put these letters in order anywhere in your word"}
+                  {isMath
+                    ? "type the answer. whole numbers only."
+                    : mode === "startEnd"
+                      ? "use a dictionary word (3+ letters) that starts and ends with these letters"
+                      : mode === "sixrush"
+                        ? "put these letters in your word. 6+ letters."
+                        : "put these letters in order anywhere in your word"}
                 </p>
               </div>
 
-              {/* ANSWER FORM: text box (letters only, lowercased), enter button,
-                  and a feedback line ("good word!" or an error) */}
+              {/* ANSWER FORM: text box (letters only, or digits only in math,
+                  lowercased), enter button, and a feedback line ("good word!" or
+                  an error) */}
               <form onSubmit={handleSubmit}>
                 <div className="entry">
                   <input
@@ -2566,13 +2830,15 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
                     value={input}
                     onChange={(e) =>
                       setInput(
-                        e.target.value.replace(/[^a-zA-Z]/g, "").toLowerCase(),
+                        e.target.value.replace(inputFilter, "").toLowerCase(),
                       )
                     }
-                    inputMode="text"
+                    inputMode={isMath ? "numeric" : "text"}
                     autoFocus
                     autoComplete="off"
-                    placeholder="type a word..."
+                    placeholder={
+                      isMath ? "type the answer..." : "type a word..."
+                    }
                   />
 
                   <button type="submit">enter</button>
@@ -2749,7 +3015,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
                     ? "everyone finished"
                     : mode === "alphabet"
                       ? "first to collect all 26 letters"
-                      : `first to ${TARGET_WORDS} words`}
+                      : `first to ${TARGET_WORDS} ${unitName}`}
             </p>
           </div>
 

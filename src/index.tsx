@@ -72,7 +72,7 @@ async function loadGamesPlayed(
     const value = await callCounter(COUNTER_GET_URL, {});
 
     if (value !== null) setGamesPlayed(value);
-  } catch { }
+  } catch {}
 }
 
 // countGamePlayed(setGamesPlayed, amount = 1): takes the state setter and how
@@ -88,11 +88,19 @@ async function countGamePlayed(
     const value = await callCounter(COUNTER_HIT_URL, { p_amount: amount });
 
     if (value !== null) setGamesPlayed(value);
-  } catch { }
+  } catch {}
 }
 
 type Difficulty = "superEasy" | "hard";
-type GameMode = "timed" | "zen" | "rush" | "alphabet" | "sevenRush";
+type MathMode = "math";
+type GameMode =
+  | "timed"
+  | "zen"
+  | "rush"
+  | "alphabet"
+  | "sevenRush"
+  | "startEnd"
+  | MathMode;
 
 // Minimum number of dictionary words that must contain a fragment.
 const DIFFICULTY_LIMITS: Record<Difficulty, number> = {
@@ -119,6 +127,8 @@ const MODE_OPTIONS: { value: GameMode; label: string; hint: string }[] = [
   { value: "timed", label: "timed", hint: "beat the clock" },
   { value: "alphabet", label: "alphabet", hint: "collect 26 letters" },
   { value: "zen", label: "zen", hint: "no timer or lives, not ranked" },
+  { value: "startEnd", label: "start/end", hint: "10 words, match both ends" },
+  { value: "math", label: "math", hint: "10 arithmetic questions" },
 ];
 
 const TIME_OPTIONS = [5, 10, 20, 60];
@@ -126,8 +136,214 @@ const TIME_OPTIONS = [5, 10, 20, 60];
 // isRushMode(mode): takes a GameMode, returns true for rush, alphabet and
 // sevenRush, the modes scored by total elapsed time instead of word count. The
 // UI uses it to decide between showing a stopwatch and a score.
+function isMathMode(mode: GameMode): mode is MathMode {
+  return mode === "math";
+}
+
+// Keep the existing leaderboard mode keys for saved scores while the game UI
+// presents math as one mode whose difficulty is chosen separately.
+function leaderboardModeFor(
+  mode: GameMode,
+  difficulty: Difficulty,
+): RankedMode | null {
+  if (mode === "math")
+    return difficulty === "superEasy" ? "mathEasy" : "mathMed";
+  return isRankedMode(mode) ? mode : null;
+}
+
 function isRushMode(mode: GameMode) {
-  return mode === "rush" || mode === "alphabet" || mode === "sevenRush";
+  return (
+    mode === "rush" ||
+    mode === "alphabet" ||
+    mode === "sevenRush" ||
+    mode === "startEnd" ||
+    isMathMode(mode)
+  );
+}
+
+type StartEndPrompt = {
+  start: string;
+  end: string;
+  examples: string[];
+  count: number;
+};
+type MathPrompt = { expression: string; answer: number };
+
+const ALL_WORDS = [...new Set([...DICTIONARY, ...MODERN_WORDS])].filter(
+  (word) => /^[a-z]+$/.test(word) && word.length >= 3,
+);
+
+// Build start/end combinations from real dictionary words. Each prompt uses
+// exactly one starting letter and one ending letter, with answers at least 3
+// letters long so every combination has room for a real word between the ends.
+function buildStartEndPromptData() {
+  const data = new Map<string, StartEndPrompt>();
+
+  for (const word of ALL_WORDS) {
+    if (word.length < 3) continue;
+
+    const start = word[0];
+    const end = word[word.length - 1];
+    const key = `${start}|${end}`;
+    let prompt = data.get(key);
+
+    if (!prompt) {
+      prompt = { start, end, examples: [], count: 0 };
+      data.set(key, prompt);
+    }
+
+    prompt.count++;
+    if (prompt.examples.length < 12 && !prompt.examples.includes(word)) {
+      prompt.examples.push(word);
+    }
+  }
+
+  return [...data.values()];
+}
+
+const START_END_PROMPTS = buildStartEndPromptData();
+
+// Start/end difficulty is based on how many dictionary words match each
+// starting-letter / ending-letter pair: easy is 50–500 words; hard is 500+.
+function pickStartEndPrompt(difficulty: Difficulty): StartEndPrompt {
+  let pool = START_END_PROMPTS.filter((item) =>
+    difficulty === "superEasy"
+      ? item.count >= 50 && item.count <= 500
+      : item.count >= 500,
+  );
+
+  // Safety fallback for unusually small or changed dictionaries.
+  if (!pool.length) {
+    pool = START_END_PROMPTS.filter((item) => item.count > 0);
+  }
+
+  if (!pool.length) {
+    return { start: "a", end: "s", examples: ["apples"], count: 1 };
+  }
+
+  if (difficulty === "hard") {
+    return pool[Math.floor(Math.random() * pool.length)];
+  }
+
+  const weightedPool: StartEndPrompt[] = [];
+  for (const item of pool) {
+    const weight = Math.min(20, Math.max(1, Math.floor(item.count / 100)));
+    for (let i = 0; i < weight; i++) weightedPool.push(item);
+  }
+
+  return weightedPool[Math.floor(Math.random() * weightedPool.length)];
+}
+
+function randomInt(min: number, max: number) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function pickMathPrompt(
+  difficulty: Difficulty,
+  usedExpressions: Set<string> = new Set(),
+): MathPrompt {
+  const applyOperation = (a: number, b: number, operation: number) => {
+    if (operation === 0) return { value: a + b, symbol: "+" };
+    if (operation === 1) return { value: a - b, symbol: "−" };
+    return { value: a * b, symbol: "×" };
+  };
+
+  // Use a bounded number of attempts so an unexpectedly exhausted pool cannot
+  // leave the game stuck in an infinite loop.
+  for (let attempt = 0; attempt < 2000; attempt++) {
+    let answer = 0;
+    let expression = "";
+    const operation = randomInt(0, 3);
+
+    // About half of prompts are two-step calculations. Easy answers can be
+    // anywhere from 0 to 99; hard uses larger numbers and results.
+    const useTwoSteps = Math.random() < 0.5;
+    if (useTwoSteps && operation !== 3) {
+      const min = difficulty === "superEasy" ? 1 : 12;
+      const max = difficulty === "superEasy" ? 20 : 45;
+      const a = randomInt(min, max);
+      const b = randomInt(min, max);
+      const c = randomInt(min, max);
+      const firstOp = randomInt(0, 2);
+      const secondOp = randomInt(0, 2);
+      const first = applyOperation(a, b, firstOp);
+      const second = applyOperation(first.value, c, secondOp);
+      answer = second.value;
+      const limit = difficulty === "superEasy" ? 99 : 500;
+      if (
+        answer < 0 ||
+        answer > limit ||
+        first.value < 0 ||
+        first.value > limit
+      )
+        continue;
+      expression = `(${a} ${first.symbol} ${b}) ${second.symbol} ${c}`;
+    } else if (difficulty === "superEasy") {
+      if (operation === 0) {
+        const a = randomInt(10, 89);
+        const b = randomInt(1, 99 - a);
+        answer = a + b;
+        expression = `${a} + ${b}`;
+      } else if (operation === 1) {
+        const a = randomInt(10, 99);
+        const b = randomInt(1, a - 1);
+        answer = a - b;
+        expression = `${a} − ${b}`;
+      } else if (operation === 2) {
+        const a = randomInt(2, 12);
+        const b = randomInt(2, Math.min(12, Math.floor(99 / a)));
+        answer = a * b;
+        expression = `${a} × ${b}`;
+      } else {
+        const a = randomInt(2, 9);
+        const b = randomInt(2, 6);
+        answer = a ** b;
+        if (answer > 99) continue;
+        expression = `${a}^${b}`;
+      }
+    } else if (operation === 0) {
+      const a = randomInt(25, 199);
+      const b = randomInt(15, 199);
+      answer = a + b;
+      if (answer > 500) continue;
+      expression = `${a} + ${b}`;
+    } else if (operation === 1) {
+      const a = randomInt(30, 250);
+      const b = randomInt(10, a - 1);
+      answer = a - b;
+      expression = `${a} − ${b}`;
+    } else if (operation === 2) {
+      const a = randomInt(12, 25);
+      const b = randomInt(3, 18);
+      answer = a * b;
+      if (answer > 500) continue;
+      expression = `${a} × ${b}`;
+    } else {
+      const a = randomInt(3, 15);
+      const b = randomInt(2, 5);
+      answer = a ** b;
+      if (answer > 500) continue;
+      expression = `${a}^${b}`;
+    }
+
+    if (usedExpressions.has(expression)) continue;
+    return { expression, answer };
+  }
+
+  // This fallback is only reached if the used-expression set is nearly full.
+  for (let a = 1; a <= 9; a++) {
+    for (let b = 1; b <= 9; b++) {
+      const expression = `${a} + ${b}`;
+      const answer = a + b;
+      if (
+        answer <= (difficulty === "superEasy" ? 99 : 500) &&
+        !usedExpressions.has(expression)
+      ) {
+        return { expression, answer };
+      }
+    }
+  }
+  return { expression: "1 + 1", answer: 2 };
 }
 
 type PromptData = {
@@ -285,17 +501,37 @@ function pickPrompt(difficulty: Difficulty, mode?: GameMode) {
   return weightedPool[Math.floor(Math.random() * weightedPool.length)];
 }
 
-// makeGroupPrompts(count, difficulty): takes how many prompts to make and a
-// GroupDifficulty, returns an array of PromptItem. Calls pickPrompt repeatedly
-// and skips fragments already chosen so players get distinct letters. A guard
-// counter stops the first loop after count x 20 tries if unique fragments run
-// out, and a second loop fills any remaining slots with repeats. It is passed to
-// GroupGame as `makePrompts`. It does not pass a mode, so multiplayer sixrush
-// uses the normal pool.
-function makeGroupPrompts(count: number, difficulty: GroupDifficulty) {
+// makeGroupPrompts(count, difficulty, mode?): returns the prompt list passed to
+// GroupGame. Start/end gets dictionary-backed one-letter endpoint prompts; other
+// modes keep using the normal fragment pool. Duplicate prompts are skipped first,
+// then allowed as a fallback if the pool runs out.
+function makeGroupPrompts(
+  count: number,
+  difficulty: GroupDifficulty,
+  mode?: string,
+) {
   const seen = new Set<string>();
   const out: PromptItem[] = [];
   let guard = 0;
+
+  // Start/end prompts are generated here too, so multiplayer gets the same
+  // one-letter endpoints and dictionary-backed answers as the solo game.
+  if (mode === "startEnd") {
+    while (out.length < count && guard++ < count * 50) {
+      const p = pickStartEndPrompt(difficulty);
+      const fragment = `${p.start}-${p.end}`;
+      if (seen.has(fragment)) continue;
+      seen.add(fragment);
+      out.push({ fragment, examples: p.examples });
+    }
+
+    while (out.length < count) {
+      const p = pickStartEndPrompt(difficulty);
+      out.push({ fragment: `${p.start}-${p.end}`, examples: p.examples });
+    }
+
+    return out;
+  }
 
   while (out.length < count && guard++ < count * 20) {
     const p = pickPrompt(difficulty);
@@ -396,6 +632,18 @@ export default function App() {
   const [prompt, setPrompt] = useState(initialPrompt.fragment);
 
   const [promptExamples, setPromptExamples] = useState(initialPrompt.examples);
+  const [startEndPrompt, setStartEndPrompt] = useState<StartEndPrompt>(() =>
+    pickStartEndPrompt(difficulty),
+  );
+  const [mathPrompt, setMathPrompt] = useState<MathPrompt>(() =>
+    pickMathPrompt(difficulty),
+  );
+  const mathPromptHistoryRef = useRef<Set<string>>(new Set());
+  const getNextMathPrompt = () => {
+    const next = pickMathPrompt(difficulty, mathPromptHistoryRef.current);
+    mathPromptHistoryRef.current.add(next.expression);
+    return next;
+  };
 
   // bumps every time a new prompt is shown so the countdown restarts even if
   // the same fragment and the same time value come up twice in a row
@@ -458,7 +706,9 @@ export default function App() {
       gameOver ||
       (gameMode !== "rush" &&
         gameMode !== "alphabet" &&
-        gameMode !== "sevenRush") ||
+        gameMode !== "sevenRush" &&
+        gameMode !== "startEnd" &&
+        !isMathMode(gameMode)) ||
       rushStartTime === null
     ) {
       return;
@@ -536,10 +786,15 @@ export default function App() {
       return;
     }
 
-    const nextPrompt = pickPrompt(difficulty, gameMode);
-
-    setPrompt(nextPrompt.fragment);
-    setPromptExamples(nextPrompt.examples);
+    if (gameMode === "startEnd") {
+      setStartEndPrompt(pickStartEndPrompt(difficulty));
+    } else if (isMathMode(gameMode)) {
+      setMathPrompt(getNextMathPrompt());
+    } else {
+      const nextPrompt = pickPrompt(difficulty, gameMode);
+      setPrompt(nextPrompt.fragment);
+      setPromptExamples(nextPrompt.examples);
+    }
     setPromptNonce((n) => n + 1);
 
     setTime(
@@ -580,32 +835,74 @@ export default function App() {
     if (gameOver) return;
 
     const word = input.trim().toLowerCase();
+
+    if (isMathMode(gameMode)) {
+      if (!/^-?\d+$/.test(word)) {
+        setMessage("enter a whole-number answer.");
+        return;
+      }
+      if (Number(word) !== mathPrompt.answer) {
+        setMessage("not quite. try again.");
+        return;
+      }
+    }
+
     const minLength =
       gameMode === "sevenRush"
         ? Math.max(prompt.length + 1, 6)
         : prompt.length + 1;
 
-    if (word.length < minLength) {
+    if (
+      !isMathMode(gameMode) &&
+      gameMode !== "startEnd" &&
+      word.length < minLength
+    ) {
       setMessage(`your word must be at least ${minLength} letters.`);
       return;
     }
 
-    if (!/^[a-z]+$/.test(word)) {
+    if (!isMathMode(gameMode) && !/^[a-z]+$/.test(word)) {
       setMessage("use letters only.");
       return;
     }
 
-    if (!DICTIONARY.has(word) && !MODERN_WORDS.has(word)) {
+    if (
+      !isMathMode(gameMode) &&
+      gameMode !== "startEnd" &&
+      !DICTIONARY.has(word) &&
+      !MODERN_WORDS.has(word)
+    ) {
       setMessage("that word isn't in the dictionary.");
       return;
     }
 
-    if (!word.includes(prompt)) {
+    if (gameMode === "startEnd") {
+      if (word.length < 3) {
+        setMessage("your word must be at least 3 letters long.");
+        return;
+      }
+      if (!word.startsWith(startEndPrompt.start)) {
+        setMessage(
+          `your word must start with "${startEndPrompt.start.toUpperCase()}".`,
+        );
+        return;
+      }
+      if (!word.endsWith(startEndPrompt.end)) {
+        setMessage(
+          `your word must end with "${startEndPrompt.end.toUpperCase()}".`,
+        );
+        return;
+      }
+      if (!DICTIONARY.has(word) && !MODERN_WORDS.has(word)) {
+        setMessage("that word isn't in the dictionary.");
+        return;
+      }
+    } else if (!isMathMode(gameMode) && !word.includes(prompt)) {
       setMessage(`your word needs "${prompt.toUpperCase()}".`);
       return;
     }
 
-    if (used.has(word)) {
+    if (!isMathMode(gameMode) && used.has(word)) {
       setMessage("you already used that word.");
       return;
     }
@@ -632,7 +929,7 @@ export default function App() {
 
     setInput("");
 
-    if (gameMode === "rush" || gameMode === "sevenRush") {
+    if (isRushMode(gameMode) && gameMode !== "alphabet") {
       const nextRushWords = rushWords + 1;
 
       setRushWords(nextRushWords);
@@ -642,7 +939,13 @@ export default function App() {
 
         setRushTotalTime(totalTime);
         setMessage(
-          gameMode === "sevenRush" ? "sixrush complete!" : "rush complete!",
+          gameMode === "sevenRush"
+            ? "sixrush complete!"
+            : gameMode === "startEnd"
+              ? "start/end complete!"
+              : isMathMode(gameMode)
+                ? "math challenge complete!"
+                : "rush complete!",
         );
         setGameOver(true);
         return;
@@ -661,10 +964,15 @@ export default function App() {
       }
     }
 
-    const nextPrompt = pickPrompt(difficulty, gameMode);
-
-    setPrompt(nextPrompt.fragment);
-    setPromptExamples(nextPrompt.examples);
+    if (gameMode === "startEnd") {
+      setStartEndPrompt(pickStartEndPrompt(difficulty));
+    } else if (isMathMode(gameMode)) {
+      setMathPrompt(getNextMathPrompt());
+    } else {
+      const nextPrompt = pickPrompt(difficulty, gameMode);
+      setPrompt(nextPrompt.fragment);
+      setPromptExamples(nextPrompt.examples);
+    }
     setPromptNonce((n) => n + 1);
 
     if (gameMode === "timed") {
@@ -744,10 +1052,16 @@ export default function App() {
 
     const startingLives = timedLives;
 
+    mathPromptHistoryRef.current.clear();
     const nextPrompt = pickPrompt(difficulty, gameMode);
     const now = Date.now();
-    setPrompt(nextPrompt.fragment);
-    setPromptExamples(nextPrompt.examples);
+    if (gameMode === "startEnd")
+      setStartEndPrompt(pickStartEndPrompt(difficulty));
+    else if (isMathMode(gameMode)) setMathPrompt(getNextMathPrompt());
+    else {
+      setPrompt(nextPrompt.fragment);
+      setPromptExamples(nextPrompt.examples);
+    }
     setPromptNonce((n) => n + 1);
     setInput("");
     setLives(startingLives);
@@ -766,7 +1080,13 @@ export default function App() {
     setLetters(new Set());
     setAnswerTimes([]);
     setMissedPrompts([]);
-    setMessage("enter a word containing the letters.");
+    setMessage(
+      gameMode === "startEnd"
+        ? "enter a word matching both ends."
+        : isMathMode(gameMode)
+          ? "solve the equation."
+          : "enter a word containing the letters.",
+    );
     setGameOver(false);
     setStarted(true);
 
@@ -776,7 +1096,9 @@ export default function App() {
     if (
       gameMode === "rush" ||
       gameMode === "alphabet" ||
-      gameMode === "sevenRush"
+      gameMode === "sevenRush" ||
+      gameMode === "startEnd" ||
+      isMathMode(gameMode)
     ) {
       setRushStartTime(now);
     } else {
@@ -814,7 +1136,11 @@ export default function App() {
         : null,
     ]);
 
-    setGameMode(pendingRun.mode);
+    setGameMode(
+      pendingRun.mode === "mathEasy" || pendingRun.mode === "mathMed"
+        ? "math"
+        : pendingRun.mode,
+    );
     setDifficulty(pendingRun.difficulty);
     setHighlightRanks({
       alltime: allTimeRank,
@@ -843,14 +1169,8 @@ export default function App() {
   // with colour #676767 so percentiles stay accurate. Errors are logged. No
   // cleanup.
   useEffect(() => {
-    if (
-      !gameOver ||
-      !started ||
-      gameMode === "zen" ||
-      !isRankedMode(gameMode)
-    ) {
-      return;
-    }
+    const rankedMode = leaderboardModeFor(gameMode, difficulty);
+    if (!gameOver || !started || !rankedMode) return;
 
     const runId = runIdRef.current;
     if (!runId) return;
@@ -858,7 +1178,9 @@ export default function App() {
     const isRush =
       gameMode === "rush" ||
       gameMode === "alphabet" ||
-      gameMode === "sevenRush";
+      gameMode === "sevenRush" ||
+      gameMode === "startEnd" ||
+      isMathMode(gameMode);
 
     if (isRush && rushTotalTime === null) {
       return;
@@ -871,14 +1193,14 @@ export default function App() {
     const roundTimeArg = gameMode === "timed" ? roundTime : null;
 
     Promise.all([
-      wouldQualify(gameMode, difficulty, roundTimeArg, finalScore, "alltime"),
-      wouldQualify(gameMode, difficulty, roundTimeArg, finalScore, "daily"),
+      wouldQualify(rankedMode, difficulty, roundTimeArg, finalScore, "alltime"),
+      wouldQualify(rankedMode, difficulty, roundTimeArg, finalScore, "daily"),
     ])
       .then(async ([allTime, daily]) => {
         if (allTime || daily) {
           setPendingRun({
             runId,
-            mode: gameMode,
+            mode: rankedMode,
             difficulty,
             roundTime: roundTimeArg,
             score: finalScore,
@@ -891,7 +1213,7 @@ export default function App() {
 
         await submitScore(
           runId,
-          gameMode,
+          rankedMode,
           difficulty,
           roundTimeArg,
           finalScore,
@@ -922,24 +1244,24 @@ export default function App() {
   // clears them if the result is empty). On failure it logs the error and clears
   // both. percentileLoading is reset either way. No cleanup.
   useEffect(() => {
-    if (
-      !gameOver ||
-      !started ||
-      gameMode === "zen" ||
-      !isRankedMode(gameMode)
-    ) {
-      return;
-    }
+    const rankedMode = leaderboardModeFor(gameMode, difficulty);
+    if (!gameOver || !started || !rankedMode) return;
 
     const finalScore =
-      gameMode === "rush" || gameMode === "alphabet" || gameMode === "sevenRush"
+      gameMode === "rush" ||
+      gameMode === "alphabet" ||
+      gameMode === "sevenRush" ||
+      gameMode === "startEnd" ||
+      isMathMode(gameMode)
         ? Math.round((rushTotalTime ?? 0) * 1000)
         : score;
 
     if (
       (gameMode === "rush" ||
         gameMode === "alphabet" ||
-        gameMode === "sevenRush") &&
+        gameMode === "sevenRush" ||
+        gameMode === "startEnd" ||
+        isMathMode(gameMode)) &&
       rushTotalTime === null
     ) {
       return;
@@ -951,7 +1273,7 @@ export default function App() {
     setPercentile(null);
     setPercentileTotal(0);
 
-    getScorePercentile(gameMode, difficulty, roundTimeArg, finalScore)
+    getScorePercentile(rankedMode, difficulty, roundTimeArg, finalScore)
       .then((result) => {
         if (!result) {
           setPercentile(null);
@@ -1046,9 +1368,8 @@ export default function App() {
   // selected one, and calls setDifficulty on click. It is a function so the
   // start screen and results screen can both reuse it.
   const renderDifficulty = () => (
-    // DIFFICULTY PICKER: a "difficulty" label above a 2-column grid with two
-    // buttons (easy: 5,000+ words / hard: 500–2,500 words). The selected one is
-    // highlighted.
+    // DIFFICULTY PICKER: easy/hard changes word-pool difficulty for word modes
+    // and switches math between one-digit answers and harder calculations.
     <div className="setting">
       <small>difficulty</small>
 
@@ -1067,7 +1388,17 @@ export default function App() {
           >
             {/* Button text: the option name in bold, with a small hint line under it */}
             <strong>{option.label}</strong>
-            <span>{option.hint}</span>
+            <span>
+              {isMathMode(gameMode)
+                ? option.value === "superEasy"
+                  ? "answers up to 99"
+                  : "harder calculations"
+                : gameMode === "startEnd"
+                  ? option.value === "superEasy"
+                    ? "50–500 matching words"
+                    : "500+ matching words"
+                  : option.hint}
+            </span>
           </button>
         ))}
       </div>
@@ -1085,22 +1416,18 @@ export default function App() {
     <div className="setting">
       <small>mode</small>
 
-      {/* 6-column grid: rush and sixrush take the wide top row (3 columns each),
-          timed / alphabet / zen share the second row (2 columns each) */}
+      {/* Three-column grid keeps the expanded mode list readable. */}
       <div
         className="option-grid mode-options"
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(6, 1fr)",
+          gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
         }}
       >
-        {MODE_OPTIONS.map((option, index) => (
+        {MODE_OPTIONS.map((option) => (
           <button
             type="button"
             key={option.value}
-            style={{
-              gridColumn: index < 2 ? "span 3" : "span 2",
-            }}
             className={gameMode === option.value ? "option selected" : "option"}
             onClick={() => setGameMode(option.value)}
           >
@@ -1487,7 +1814,7 @@ export default function App() {
               </p>
             ) : (
               <Leaderboard
-                mode={gameMode}
+                mode={leaderboardModeFor(gameMode, difficulty)!}
                 difficulty={difficulty}
                 roundTime={gameMode === "timed" ? roundTime : null}
                 period={boardPeriod}
@@ -1582,9 +1909,11 @@ export default function App() {
             <div className="results-header">
               <small>
                 {gameMode === "zen" ||
-                  gameMode === "rush" ||
-                  gameMode === "alphabet" ||
-                  gameMode === "sevenRush"
+                gameMode === "rush" ||
+                gameMode === "alphabet" ||
+                gameMode === "sevenRush" ||
+                gameMode === "startEnd" ||
+                isMathMode(gameMode)
                   ? "run complete"
                   : "game over"}
               </small>
@@ -1603,26 +1932,28 @@ export default function App() {
               {/* Percentile box (ranked modes only): "calculating...", then
                   "better than X% of runs" with the sample size, or a message if
                   there aren't enough scores yet */}
-              {gameMode !== "zen" && isRankedMode(gameMode) && (
-                <div className="percentile-box">
-                  <small>your performance</small>
+              {gameMode !== "zen" &&
+                leaderboardModeFor(gameMode, difficulty) && (
+                  <div className="percentile-box">
+                    <small>your performance</small>
 
-                  {percentileLoading ? (
-                    <strong>calculating...</strong>
-                  ) : percentile !== null && percentileTotal > 0 ? (
-                    <>
-                      <strong>better than {percentile}% of runs</strong>
+                    {percentileLoading ? (
+                      <strong>calculating...</strong>
+                    ) : percentile !== null && percentileTotal > 0 ? (
+                      <>
+                        <strong>better than {percentile}% of runs</strong>
+                        <span>
+                          Compared with {percentileTotal.toLocaleString()}{" "}
+                          scores
+                        </span>
+                      </>
+                    ) : (
                       <span>
-                        Compared with {percentileTotal.toLocaleString()} scores
+                        Not enough scores to calculate a percentile yet.
                       </span>
-                    </>
-                  ) : (
-                    <span>
-                      Not enough scores to calculate a percentile yet.
-                    </span>
-                  )}
-                </div>
-              )}
+                    )}
+                  </div>
+                )}
               {/* Average seconds per correct answer ("—" if none were answered) */}
               <div className="stat-box">
                 <small>average time</small>
@@ -1678,11 +2009,11 @@ export default function App() {
             {/* Leaderboards for this mode (ranked modes only): the daily board
                 first, then the all-time board. The player's own rank is
                 highlighted if they just submitted a score. */}
-            {gameMode !== "zen" && isRankedMode(gameMode) && (
+            {gameMode !== "zen" && leaderboardModeFor(gameMode, difficulty) && (
               <>
                 {/* Daily leaderboard */}
                 <Leaderboard
-                  mode={gameMode}
+                  mode={leaderboardModeFor(gameMode, difficulty)!}
                   difficulty={difficulty}
                   roundTime={gameMode === "timed" ? roundTime : null}
                   period="daily"
@@ -1694,7 +2025,7 @@ export default function App() {
 
                 {/* All-time leaderboard */}
                 <Leaderboard
-                  mode={gameMode}
+                  mode={leaderboardModeFor(gameMode, difficulty)!}
                   difficulty={difficulty}
                   roundTime={gameMode === "timed" ? roundTime : null}
                   period="alltime"
@@ -1736,9 +2067,13 @@ export default function App() {
                     ? "run sixrush again (space)"
                     : gameMode === "alphabet"
                       ? "start alphabet"
-                      : gameMode === "zen"
-                        ? "start zen game"
-                        : "play again"}
+                      : gameMode === "startEnd"
+                        ? "run start/end again (space)"
+                        : isMathMode(gameMode)
+                          ? "run math challenge again (space)"
+                          : gameMode === "zen"
+                            ? "start zen game"
+                            : "play again"}
               </button>
             </div>
           </div>
@@ -1758,7 +2093,11 @@ export default function App() {
                         ? "ALPHABET"
                         : gameMode === "zen"
                           ? "ZEN MODE"
-                          : "TIME LEFT"}
+                          : gameMode === "startEnd"
+                            ? "START / END"
+                            : isMathMode(gameMode)
+                              ? "MATH"
+                              : "TIME LEFT"}
                 </small>
 
                 {/* Timed: seconds left for this word (turns red at 3s or less) */}
@@ -1772,7 +2111,7 @@ export default function App() {
                 {gameMode === "zen" && <div className="timer">∞</div>}
 
                 {/* Rush / sixrush: words completed out of 10 */}
-                {(gameMode === "rush" || gameMode === "sevenRush") && (
+                {isRushMode(gameMode) && gameMode !== "alphabet" && (
                   <div className="timer">{rushWords}/10</div>
                 )}
 
@@ -1797,16 +2136,38 @@ export default function App() {
             {/* PROMPT: the big letter fragment the player must use, in capitals,
                 with an instruction line under it */}
             <div className="prompt">
-              <small>USE THESE LETTERS</small>
-
-              <strong>{prompt.toUpperCase()}</strong>
-
-              <p>put these letters in order anywhere in your word</p>
+              {gameMode === "startEnd" ? (
+                <>
+                  <small>START WITH / END WITH</small>
+                  <strong>
+                    {startEndPrompt.start.toUpperCase()} ···{" "}
+                    {startEndPrompt.end.toUpperCase()}
+                  </strong>
+                  <p>
+                    enter a dictionary word (3+ letters) that starts and ends
+                    with these letters
+                  </p>
+                </>
+              ) : isMathMode(gameMode) ? (
+                <>
+                  <small>SOLVE THE EQUATION</small>
+                  <strong>{mathPrompt.expression}</strong>
+                  <p>enter the whole-number answer</p>
+                </>
+              ) : (
+                <>
+                  <small>USE THESE LETTERS</small>
+                  <strong>{prompt.toUpperCase()}</strong>
+                  <p>put these letters in order anywhere in your word</p>
+                </>
+              )}
             </div>
 
             {/* ANSWER FORM: pressing enter or clicking the button submits the word */}
             <form onSubmit={submit}>
-              <label htmlFor="word">your word</label>
+              <label htmlFor="word">
+                {isMathMode(gameMode) ? "your answer" : "your word"}
+              </label>
 
               {/* Text box (letters only, auto-lowercased) and the enter button */}
               <div className="entry">
@@ -1815,14 +2176,22 @@ export default function App() {
                   value={input}
                   onChange={(e) =>
                     setInput(
-                      e.target.value.replace(/[^a-zA-Z]/g, "").toLowerCase(),
+                      isMathMode(gameMode)
+                        ? e.target.value.replace(/[^0-9-]/g, "")
+                        : e.target.value
+                            .replace(/[^a-zA-Z]/g, "")
+                            .toLowerCase(),
                     )
                   }
                   ref={wordInputRef}
                   inputMode="text"
                   autoFocus
                   autoComplete="off"
-                  placeholder="type a word..."
+                  placeholder={
+                    isMathMode(gameMode)
+                      ? "type your answer..."
+                      : "type a word..."
+                  }
                 />
 
                 <button type="submit">enter</button>
