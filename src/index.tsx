@@ -1,4 +1,4 @@
-import {
+  import {
   Dispatch,
   SetStateAction,
   useEffect,
@@ -207,9 +207,9 @@ const START_END_PROMPTS = buildStartEndPromptData();
 // starting-letter / ending-letter pair: easy is 50–500 words; hard is 500+.
 function pickStartEndPrompt(difficulty: Difficulty): StartEndPrompt {
   let pool = START_END_PROMPTS.filter((item) =>
-    difficulty === "superEasy"
-      ? item.count >= 50 && item.count <= 500
-      : item.count >= 500,
+    difficulty === "hard"
+      ? item.count >= 80 && item.count <= 800
+      : item.count >= 800,
   );
 
   // Safety fallback for unusually small or changed dictionaries.
@@ -1394,9 +1394,9 @@ export default function App() {
                   ? "answers up to 99"
                   : "harder calculations"
                 : gameMode === "startEnd"
-                  ? option.value === "superEasy"
-                    ? "50–500 matching words"
-                    : "500+ matching words"
+                  ? option.value === "hard"
+                    ? "80-800 matching words"
+                    : "800+ matching words"
                   : option.hint}
             </span>
           </button>
