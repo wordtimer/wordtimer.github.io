@@ -11,7 +11,11 @@ export type RankedMode =
   | "sevenRush"
   | "startEnd"
   | "mathEasy"
-  | "mathMed";
+  | "mathMed"
+  | "daily"
+  | "anagram"
+  | "wordChange";
+
 export type Period = "alltime" | "daily";
 
 export type LeaderboardEntry = {
@@ -34,6 +38,9 @@ const MODE_LABELS: Record<RankedMode, string> = {
   startEnd: "start/end",
   mathEasy: "math easy",
   mathMed: "math hard",
+  daily: "daily",
+  anagram: "anagram",
+  wordChange: "word change",
 };
 
 export function isRankedMode(mode: string): mode is RankedMode {
@@ -44,11 +51,24 @@ export function isRankedMode(mode: string): mode is RankedMode {
     mode === "sevenRush" ||
     mode === "startEnd" ||
     mode === "mathEasy" ||
-    mode === "mathMed"
+    mode === "mathMed" ||
+    mode === "daily" ||
+    mode === "anagram" ||
+    mode === "wordChange"
   );
 }
 
-async function rpc<T>(fn: string, args: Record<string, unknown>): Promise<T> {
+// noDifficulty(mode): takes a RankedMode, returns true for modes where the
+// easy/hard setting does nothing (daily, anagram, word change). Every RPC call
+// below pins these to "superEasy" so they all share one board instead of
+// splitting into separate easy and hard boards.
+const noDifficulty = (mode: RankedMode) =>
+  mode === "daily" || mode === "anagram" || mode === "wordChange";
+
+async function rpc<T>(
+  fn: string,
+  args: Record<string, unknown>,
+): Promise<T> {
   const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
     method: "POST",
     headers: {
@@ -76,7 +96,7 @@ export async function wouldQualify(
 ) {
   return rpc<boolean>("would_qualify", {
     p_mode: mode,
-    p_difficulty: difficulty,
+    p_difficulty: noDifficulty(mode) ? "superEasy" : difficulty,
     p_round_time: mode === "timed" ? roundTime : null,
     p_score: score,
     p_period: period,
@@ -96,7 +116,7 @@ export async function getScorePercentile(
 ) {
   const rows = await rpc<ScorePercentile[]>("get_score_percentile", {
     p_mode: mode,
-    p_difficulty: difficulty,
+    p_difficulty: noDifficulty(mode) ? "superEasy" : difficulty,
     p_round_time: mode === "timed" ? roundTime : null,
     p_score: score,
   });
@@ -124,7 +144,7 @@ export async function fetchLeaderboard(
     }[]
   >("get_leaderboard", {
     p_mode: mode,
-    p_difficulty: difficulty,
+    p_difficulty: noDifficulty(mode) ? "superEasy" : difficulty,
     p_round_time: mode === "timed" ? roundTime : null,
     p_period: period,
   });
@@ -149,7 +169,7 @@ export async function submitScore(
   return rpc<number>("submit_score", {
     p_run_id: runId,
     p_mode: mode,
-    p_difficulty: difficulty,
+    p_difficulty: noDifficulty(mode) ? "superEasy" : difficulty,
     p_round_time: mode === "timed" ? roundTime : null,
     p_score: score,
     p_name: name.trim().slice(0, MAX_NAME_LENGTH),
@@ -157,23 +177,40 @@ export async function submitScore(
   });
 }
 
-export async function getRunRank(runId: string, period: Period = "alltime") {
+export async function getRunRank(
+  runId: string,
+  period: Period = "alltime",
+) {
   return rpc<number>("get_run_rank", {
     p_run_id: runId,
     p_period: period,
   });
 }
 
+// formatScore(mode, score): takes a mode and a stored score, returns the text to
+// show. Timed scores are word counts, anagram scores are points, and every
+// other mode stores milliseconds, shown as seconds with two decimals.
 function formatScore(mode: RankedMode, score: number) {
   if (mode === "timed") {
     return `${score} words`;
+  }
+
+  if (mode === "anagram") {
+    return `${score} pts`;
   }
 
   return `${(score / 1000).toFixed(2)}s`;
 }
 
 function formatModeTitle(mode: RankedMode, difficulty: string) {
-  if (mode === "startEnd" || mode === "mathEasy" || mode === "mathMed") {
+  if (
+    mode === "startEnd" ||
+    mode === "mathEasy" ||
+    mode === "mathMed" ||
+    mode === "daily" ||
+    mode === "anagram" ||
+    mode === "wordChange"
+  ) {
     return MODE_LABELS[mode];
   }
 
@@ -228,7 +265,9 @@ export function Leaderboard({
     <div className="leaderboard">
       <div className="section-heading">
         <div>
-          <small>{period === "daily" ? "daily" : "all-time"}</small>
+          <small>
+            {period === "daily" ? "3-day" : "all-time"}
+          </small>
           <h2>{formatModeTitle(mode, difficulty)}</h2>
         </div>
       </div>
@@ -344,9 +383,9 @@ export function LeaderboardSubmitModal({
 
         <p className="rule">
           {qualifiesAllTime && qualifiesDaily
-            ? "your score qualifies for both all-time and daily."
+            ? "your score qualifies for both all-time and 3-day."
             : qualifiesDaily
-              ? "your score qualifies for the daily leaderboard."
+              ? "your score qualifies for the 3-day leaderboard."
               : "your score qualifies for the all-time leaderboard."}
         </p>
 

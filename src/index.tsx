@@ -29,6 +29,10 @@ const TIMED_LIFE_OPTIONS = [1, 2, 3, 4, 5];
 const TIMED_SHORT_TIME = 5;
 const TIMED_SHORT_AFTER_WORDS_PER_PLAYER = 20;
 
+// Solo anagram mode: seconds on the clock, and the shortest word that counts.
+const ANAGRAM_SECONDS = 45;
+const ANAGRAM_MIN_LENGTH = 3;
+
 const SUPABASE_KEY = "sb_publishable_mB2ZU7RWDpQdPA-mIh8tKw_oxs1_2_B";
 
 // Games-played counter. Both are Supabase RPC functions called with POST.
@@ -100,6 +104,9 @@ type GameMode =
   | "alphabet"
   | "sevenRush"
   | "startEnd"
+  | "daily"
+  | "anagram"
+  | "wordChange"
   | MathMode;
 
 // Minimum number of dictionary words that must contain a fragment.
@@ -129,19 +136,43 @@ const MODE_OPTIONS: { value: GameMode; label: string; hint: string }[] = [
   { value: "zen", label: "zen", hint: "no timer or lives, not ranked" },
   { value: "startEnd", label: "start/end", hint: "10 words, match both ends" },
   { value: "math", label: "math", hint: "10 arithmetic questions" },
+  { value: "daily", label: "daily", hint: "5 words, once a day" },
+  {
+    value: "anagram",
+    label: "anagram",
+    hint: `${ANAGRAM_SECONDS}s, words from 7 letters`,
+  },
+  {
+    value: "wordChange",
+    label: "word change",
+    hint: "1 ladder, 1 letter at a time",
+  },
 ];
 
 const TIME_OPTIONS = [5, 10, 20, 60];
 
-// isRushMode(mode): takes a GameMode, returns true for rush, alphabet and
-// sevenRush, the modes scored by total elapsed time instead of word count. The
-// UI uses it to decide between showing a stopwatch and a score.
+// isValidWord(word): takes a lowercase word, returns true if it is in the main
+// dictionary or the modern-words list. Used by the anagram and word change
+// checks, and passed to GroupGame as its dictionary check.
+const isValidWord = (word: string) =>
+  DICTIONARY.has(word) || MODERN_WORDS.has(word);
+
+// noDifficultyMode(mode): takes a GameMode, returns true for modes where the
+// easy/hard setting does nothing (anagram, word change and daily). The
+// difficulty picker greys out and deselects its buttons for these.
+const noDifficultyMode = (mode: GameMode) =>
+  mode === "anagram" || mode === "wordChange" || mode === "daily";
+
+// isMathMode(mode): takes a GameMode, returns true only for the math mode. It
+// is a type guard, so TypeScript knows the mode is MathMode afterwards.
 function isMathMode(mode: GameMode): mode is MathMode {
   return mode === "math";
 }
 
 // Keep the existing leaderboard mode keys for saved scores while the game UI
-// presents math as one mode whose difficulty is chosen separately.
+// presents math as one mode whose difficulty is chosen separately. Modes with
+// no leaderboard key (zen, anagram, word change) return null, which the rest of
+// the code treats as "not ranked".
 function leaderboardModeFor(
   mode: GameMode,
   difficulty: Difficulty,
@@ -151,12 +182,18 @@ function leaderboardModeFor(
   return isRankedMode(mode) ? mode : null;
 }
 
+// isRushMode(mode): takes a GameMode, returns true for the modes scored by
+// total elapsed time instead of word count (rush, alphabet, sixrush, start/end,
+// daily, word change and math). The UI uses it to decide between showing a
+// stopwatch and a score. Anagram is not included because it counts down.
 function isRushMode(mode: GameMode) {
   return (
     mode === "rush" ||
     mode === "alphabet" ||
     mode === "sevenRush" ||
     mode === "startEnd" ||
+    mode === "daily" ||
+    mode === "wordChange" ||
     isMathMode(mode)
   );
 }
@@ -427,6 +464,84 @@ function buildPromptData() {
 
 const PROMPT_DATA = buildPromptData();
 
+/* ---------- daily mode ---------- */
+const DAILY_WORDS = 5;
+const DAILY_TARGET_COUNT = 4000;
+const DAILY_TOLERANCE = 400;
+const DAILY_STORAGE_KEY = "wordtimer_daily";
+
+type DailyRecord = { date: string; time: number | null };
+
+// UTC date, so every device gets the same puzzle on the same day.
+const todayKey = () => new Date().toISOString().slice(0, 10);
+
+function readDaily(): DailyRecord | null {
+  try {
+    const raw = JSON.parse(localStorage.getItem(DAILY_STORAGE_KEY) ?? "null");
+    return raw && raw.date === todayKey() ? (raw as DailyRecord) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeDaily(record: DailyRecord) {
+  try {
+    localStorage.setItem(DAILY_STORAGE_KEY, JSON.stringify(record));
+  } catch {
+    // storage unavailable
+  }
+}
+
+// small seeded RNG (hash feeding a mixer)
+function seededRng(seed: string) {
+  let h = 1779033703 ^ seed.length;
+  for (let i = 0; i < seed.length; i++) {
+    h = Math.imul(h ^ seed.charCodeAt(i), 3432918353);
+    h = (h << 13) | (h >>> 19);
+  }
+  return () => {
+    h = Math.imul(h ^ (h >>> 16), 2246822507);
+    h = Math.imul(h ^ (h >>> 13), 3266489909);
+    h ^= h >>> 16;
+    return (h >>> 0) / 4294967296;
+  };
+}
+
+// 5 fragments that each appear in roughly 4000 dictionary words, the same for
+// everyone on a given UTC day.
+function buildDailyPrompts(dateKey: string) {
+  const all = [...PROMPT_DATA.entries()]
+    .map(([fragment, d]) => ({
+      fragment,
+      count: d.count,
+      examples: d.examples,
+    }))
+    .sort((a, b) => (a.fragment < b.fragment ? -1 : 1));
+
+  let pool = all.filter(
+    (p) => Math.abs(p.count - DAILY_TARGET_COUNT) <= DAILY_TOLERANCE,
+  );
+
+  if (pool.length < DAILY_WORDS * 3) {
+    pool = [...all]
+      .sort(
+        (a, b) =>
+          Math.abs(a.count - DAILY_TARGET_COUNT) -
+          Math.abs(b.count - DAILY_TARGET_COUNT),
+      )
+      .slice(0, 30)
+      .sort((a, b) => (a.fragment < b.fragment ? -1 : 1));
+  }
+
+  const rng = seededRng(`wordtimer-daily-${dateKey}`);
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  return pool.slice(0, DAILY_WORDS);
+}
+
+
 // buildPromptPool(difficulty, mode?, minimumOverride?): takes a difficulty, an
 // optional game mode, and an optional replacement minimum. Returns an array of
 // {fragment, count, examples}. It keeps fragments from PROMPT_DATA that appear
@@ -508,6 +623,129 @@ function pickPrompt(difficulty: Difficulty, mode?: GameMode) {
   return weightedPool[Math.floor(Math.random() * weightedPool.length)];
 }
 
+/* ---------- anagram (solo + multiplayer) ---------- */
+const VOWELS = new Set(["a", "e", "i", "o", "u"]);
+const PANGRAM_SEEDS = ALL_WORDS.filter(
+  (w) => w.length >= 7 && w.length <= 9 && new Set(w).size === 7,
+);
+
+// makeAnagramPrompt(): takes nothing, returns a PromptItem whose fragment is
+// the 7 shuffled letters and whose examples are up to 12 words that can be made
+// from them (pangrams first, then the longest). The letters are taken from a
+// real word with 7 distinct letters, so at least one pangram exists. It retries
+// (up to 30 times) until the letters include 2+ vowels and allow at least 40
+// words, and falls back to "stearin" if nothing qualifies.
+function makeAnagramPrompt(): PromptItem {
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const seed = PANGRAM_SEEDS[Math.floor(Math.random() * PANGRAM_SEEDS.length)];
+    if (!seed) break;
+    const letters = [...new Set(seed)];
+    if (letters.filter((c) => VOWELS.has(c)).length < 2) continue;
+
+    const set = new Set(letters);
+    const valid = ALL_WORDS.filter((w) => [...w].every((c) => set.has(c)));
+    if (valid.length < 40) continue;
+
+    const pangrams = valid.filter((w) => set.size === new Set(w).size);
+    const longest = [...valid].sort((a, b) => b.length - a.length);
+    const examples = [...new Set([...pangrams, ...longest])].slice(0, 12);
+
+    for (let i = letters.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [letters[i], letters[j]] = [letters[j], letters[i]];
+    }
+    return { fragment: letters.join(""), examples };
+  }
+  return { fragment: "stearin", examples: ["inserts", "stearin"] };
+}
+
+/* ---------- word change (solo + multiplayer) ---------- */
+type WordGraph = { words: string[]; buckets: Map<string, string[]> };
+const wordGraphs = new Map<number, WordGraph>();
+
+// getWordGraph(len): takes a word length, returns a WordGraph for words of that
+// length. `words` is every dictionary word of that length; `buckets` maps a
+// "wildcard" key (the word with one letter replaced by "_", e.g. "c_t") to every
+// word that matches it, so words one letter apart share a bucket. Built once per
+// length and cached in wordGraphs.
+function getWordGraph(len: number): WordGraph {
+  const cached = wordGraphs.get(len);
+  if (cached) return cached;
+
+  const words = ALL_WORDS.filter((w) => w.length === len);
+  const buckets = new Map<string, string[]>();
+  for (const w of words) {
+    for (let i = 0; i < len; i++) {
+      const key = w.slice(0, i) + "_" + w.slice(i + 1);
+      const list = buckets.get(key);
+      if (list) list.push(w);
+      else buckets.set(key, [w]);
+    }
+  }
+  const graph = { words, buckets };
+  wordGraphs.set(len, graph);
+  return graph;
+}
+
+// neighborsOf(word, g): takes a word and its WordGraph, returns every other
+// word that differs from it by exactly one letter, by reading the buckets for
+// each wildcard version of the word.
+function neighborsOf(word: string, g: WordGraph) {
+  const out: string[] = [];
+  for (let i = 0; i < word.length; i++) {
+    const key = word.slice(0, i) + "_" + word.slice(i + 1);
+    for (const w of g.buckets.get(key) ?? []) if (w !== word) out.push(w);
+  }
+  return out;
+}
+
+// makeWordChangePrompt(difficulty): takes a difficulty, returns a PromptItem
+// whose fragment is "start-end" and whose examples are one shortest path
+// between them (proof the ladder is solvable). Easy uses 4-letter words with
+// ladders of 3–4 steps; hard uses 5-letter words with 5–7 steps. It picks a
+// random start, runs a breadth-first search, then picks a target whose
+// shortest-path distance is in range. If a range fails 150 times it tries a
+// wider one, and finally falls back to cold → warm.
+function makeWordChangePrompt(difficulty: GroupDifficulty): PromptItem {
+  const len = difficulty === "hard" ? 5 : 4;
+  const g = getWordGraph(len);
+  const ranges =
+    difficulty === "hard"
+      ? [[5, 7], [4, 7], [3, 7]]
+      : [[3, 4], [2, 4]];
+
+  for (const [minSteps, maxSteps] of ranges) {
+    for (let attempt = 0; attempt < 150; attempt++) {
+      const start = g.words[Math.floor(Math.random() * g.words.length)];
+      const parent = new Map<string, string | null>([[start, null]]);
+      const depth = new Map<string, number>([[start, 0]]);
+      const queue = [start];
+      const candidates: string[] = [];
+
+      for (let qi = 0; qi < queue.length; qi++) {
+        const cur = queue[qi];
+        const d = depth.get(cur)!;
+        if (d >= minSteps) candidates.push(cur);
+        if (d >= maxSteps) continue;
+        for (const n of neighborsOf(cur, g)) {
+          if (parent.has(n)) continue;
+          parent.set(n, cur);
+          depth.set(n, d + 1);
+          queue.push(n);
+        }
+      }
+      if (!candidates.length) continue;
+
+      const end = candidates[Math.floor(Math.random() * candidates.length)];
+      const path: string[] = [];
+      for (let w: string | null = end; w; w = parent.get(w) ?? null) path.push(w);
+      path.reverse();
+      return { fragment: `${start}-${end}`, examples: path };
+    }
+  }
+  return { fragment: "cold-warm", examples: ["cold", "cord", "card", "ward", "warm"] };
+}
+
 // makeGroupPrompts(count, difficulty, mode?): returns the prompt list passed to
 // GroupGame. Start/end gets dictionary-backed one-letter endpoint prompts; other
 // modes keep using the normal fragment pool. Duplicate prompts are skipped first,
@@ -517,6 +755,22 @@ function makeGroupPrompts(
   difficulty: GroupDifficulty,
   mode?: string,
 ) {
+  if (mode === "anagram") return [makeAnagramPrompt()];
+
+  if (mode === "wordChange") {
+    const ladders: PromptItem[] = [];
+    const seenLadders = new Set<string>();
+    let tries = 0;
+    while (ladders.length < count && tries++ < count * 20) {
+      const p = makeWordChangePrompt(difficulty);
+      if (seenLadders.has(p.fragment)) continue;
+      seenLadders.add(p.fragment);
+      ladders.push(p);
+    }
+    while (ladders.length < count) ladders.push(makeWordChangePrompt(difficulty));
+    return ladders;
+  }
+
   const seen = new Set<string>();
   const out: PromptItem[] = [];
   let guard = 0;
@@ -632,6 +886,15 @@ export default function App() {
   const [shortenTimed, setShortenTimed] = useState(true);
 
   const [gameMode, setGameMode] = useState<GameMode>("rush");
+
+  // ---- daily mode (one play per device) ----
+  const [dailyRecord, setDailyRecord] = useState<DailyRecord | null>(readDaily);
+  const dailyPromptsRef = useRef<
+    { fragment: string; count: number; examples: string[] }[]
+  >([]);
+  const rushTarget = gameMode === "daily" ? DAILY_WORDS : 10;
+  const dailyLocked = gameMode === "daily" && dailyRecord?.date === todayKey();
+
   const wordInputRef = useRef<HTMLInputElement | null>(null);
 
   const initialPrompt = pickPrompt("superEasy");
@@ -651,6 +914,15 @@ export default function App() {
     mathPromptHistoryRef.current.add(next.expression);
     return next;
   };
+
+  // ---- anagram mode: the 7 letters and the seconds left on the clock ----
+  const [anagramLetters, setAnagramLetters] = useState("");
+  const [anagramLeft, setAnagramLeft] = useState(ANAGRAM_SECONDS);
+
+  // ---- word change mode: start word, target word, and my steps so far ----
+  const [wcStart, setWcStart] = useState("");
+  const [wcEnd, setWcEnd] = useState("");
+  const [wcChain, setWcChain] = useState<string[]>([]);
 
   // bumps every time a new prompt is shown so the countdown restarts even if
   // the same fragment and the same time value come up twice in a row
@@ -703,21 +975,14 @@ export default function App() {
     loadGamesPlayed(setGamesPlayed);
   }, []);
 
-  // Effect 2, stopwatch for rush, sixrush and alphabet. Re-runs when gameOver,
-  // gameMode or rushStartTime changes. Does nothing if the game is over, the
-  // mode isn't one of those three, or rushStartTime is null. Otherwise it sets
-  // rushElapsed to (Date.now() - rushStartTime) / 1000, once right away and then
-  // every 100 ms. Cleanup clears the interval.
+  // Effect 2, stopwatch for rush, sixrush, alphabet, word change and the other
+  // time-scored modes. Re-runs when gameOver, gameMode or rushStartTime changes.
+  // Does nothing if the game is over, the mode isn't one of those, or
+  // rushStartTime is null. Otherwise it sets rushElapsed to
+  // (Date.now() - rushStartTime) / 1000, once right away and then every 100 ms.
+  // Cleanup clears the interval.
   useEffect(() => {
-    if (
-      gameOver ||
-      (gameMode !== "rush" &&
-        gameMode !== "alphabet" &&
-        gameMode !== "sevenRush" &&
-        gameMode !== "startEnd" &&
-        !isMathMode(gameMode)) ||
-      rushStartTime === null
-    ) {
+    if (gameOver || !isRushMode(gameMode) || rushStartTime === null) {
       return;
     }
 
@@ -731,6 +996,43 @@ export default function App() {
 
     return () => window.clearInterval(id);
   }, [gameOver, gameMode, rushStartTime]);
+
+  // Effect 2b, anagram countdown. Re-runs when started, gameOver, gameMode or
+  // rushStartTime changes. Does nothing unless an anagram game is running and
+  // rushStartTime is set (anagram reuses it as the start time). Otherwise,
+  // every 100 ms it sets anagramLeft to the seconds remaining out of
+  // ANAGRAM_SECONDS (never below 0). When it reaches 0 it shows "time's up!"
+  // and sets gameOver. Cleanup clears the interval.
+  useEffect(() => {
+    if (
+      !started ||
+      gameOver ||
+      gameMode !== "anagram" ||
+      rushStartTime === null
+    ) {
+      return;
+    }
+
+    const update = () => {
+      const left = Math.max(
+        0,
+        ANAGRAM_SECONDS - (Date.now() - rushStartTime) / 1000,
+      );
+
+      setAnagramLeft(left);
+
+      if (left <= 0) {
+        setMessage("time's up!");
+        setGameOver(true);
+      }
+    };
+
+    update();
+
+    const id = window.setInterval(update, 100);
+
+    return () => window.clearInterval(id);
+  }, [started, gameOver, gameMode, rushStartTime]);
 
   // Effect 3, per-word countdown (timed mode). Re-runs when started, gameOver,
   // gameMode, time or promptNonce changes. Does nothing if the game hasn't
@@ -835,7 +1137,8 @@ export default function App() {
   // sixrush, 26 letters for alphabet (both save rushTotalTime and set gameOver).
   // If the game continues it picks the next prompt, bumps promptNonce, resets the
   // timed clock, restarts roundStartedAt, and when all 26 letters are collected
-  // clears them (and gives an extra life in timed mode).
+  // clears them (and gives an extra life in timed mode). Anagram and word change
+  // use their own handlers below.
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
 
@@ -941,18 +1244,26 @@ export default function App() {
 
       setRushWords(nextRushWords);
 
-      if (nextRushWords >= 10) {
+      if (nextRushWords >= rushTarget) {
         const totalTime = (Date.now() - (rushStartTime ?? Date.now())) / 1000;
 
         setRushTotalTime(totalTime);
+
+        if (gameMode === "daily") {
+          const record: DailyRecord = { date: todayKey(), time: totalTime };
+          writeDaily(record);
+          setDailyRecord(record);
+        }
         setMessage(
-          gameMode === "sevenRush"
-            ? "sixrush complete!"
-            : gameMode === "startEnd"
-              ? "start/end complete!"
-              : isMathMode(gameMode)
-                ? "math challenge complete!"
-                : "rush complete!",
+          gameMode === "daily"
+            ? "daily complete!"
+            : gameMode === "sevenRush"
+              ? "sixrush complete!"
+              : gameMode === "startEnd"
+                ? "start/end complete!"
+                : isMathMode(gameMode)
+                  ? "math challenge complete!"
+                  : "rush complete!",
         );
         setGameOver(true);
         return;
@@ -976,7 +1287,11 @@ export default function App() {
     } else if (isMathMode(gameMode)) {
       setMathPrompt(getNextMathPrompt());
     } else {
-      const nextPrompt = pickPrompt(difficulty, gameMode);
+      const nextPrompt =
+        gameMode === "daily"
+          ? (dailyPromptsRef.current[nextScore] ??
+            pickPrompt(difficulty, gameMode))
+          : pickPrompt(difficulty, gameMode);
       setPrompt(nextPrompt.fragment);
       setPromptExamples(nextPrompt.examples);
     }
@@ -1005,6 +1320,132 @@ export default function App() {
       setLetters(nextLetters);
       setMessage("good word!");
     }
+  };
+
+  // submitAnagram(event): takes a form event, returns nothing. The enter-key
+  // handler for anagram mode. Ignored once the game is over or the clock is at
+  // 0. Validates the word in order: letters only, at least ANAGRAM_MIN_LENGTH
+  // long, every character is one of the 7 letters (repeats allowed), in a
+  // dictionary, not already used; the first failure sets a message and stops.
+  // On success it scores the word as (length - 2), plus 7 if it uses all 7
+  // letters (a pangram), records the answer time, adds the word to `used`, and
+  // adds the points to `score`. The game ends from the countdown effect, not here.
+  const submitAnagram = (event: React.FormEvent) => {
+    event.preventDefault();
+
+    if (gameOver || anagramLeft <= 0) return;
+
+    const word = input.trim().toLowerCase();
+
+    if (!/^[a-z]+$/.test(word)) {
+      setMessage("use letters only.");
+      return;
+    }
+
+    if (word.length < ANAGRAM_MIN_LENGTH) {
+      setMessage(`your word must be at least ${ANAGRAM_MIN_LENGTH} letters.`);
+      return;
+    }
+
+    for (const char of word) {
+      if (!anagramLetters.includes(char)) {
+        setMessage(`"${char.toUpperCase()}" isn't one of the letters.`);
+        return;
+      }
+    }
+
+    if (!isValidWord(word)) {
+      setMessage("that word isn't in the dictionary.");
+      return;
+    }
+
+    if (used.has(word)) {
+      setMessage("you already used that word.");
+      return;
+    }
+
+    const pangram = [...anagramLetters].every((char) => word.includes(char));
+    const points = word.length - 2 + (pangram ? 7 : 0);
+
+    setAnswerTimes((current) => [
+      ...current,
+      (Date.now() - roundStartedAt.current) / 1000,
+    ]);
+    roundStartedAt.current = Date.now();
+
+    setUsed((current) => new Set(current).add(word));
+    setScore((current) => current + points);
+    setInput("");
+    setMessage(pangram ? `pangram! +${points}` : `+${points}`);
+  };
+
+  // submitWordChange(event): takes a form event, returns nothing. The enter-key
+  // handler for word change mode. Ignored once the game is over. The word must
+  // be the same length as the current word, differ by exactly one letter, be in
+  // a dictionary, and not already be in the chain (start word included); the
+  // first failure sets a message and stops. A valid step is added to wcChain. If
+  // the step is the target word, it saves rushTotalTime (the final time), adds 1
+  // to score and sets gameOver.
+  const submitWordChange = (event: React.FormEvent) => {
+    event.preventDefault();
+
+    if (gameOver) return;
+
+    const word = input.trim().toLowerCase();
+    const current = wcChain[wcChain.length - 1] ?? wcStart;
+
+    if (!/^[a-z]+$/.test(word)) {
+      setMessage("use letters only.");
+      return;
+    }
+
+    if (word.length !== current.length) {
+      setMessage(`use a ${current.length}-letter word.`);
+      return;
+    }
+
+    let diff = 0;
+    for (let i = 0; i < word.length; i++) if (word[i] !== current[i]) diff++;
+
+    if (diff === 0) {
+      setMessage("that's the same word.");
+      return;
+    }
+
+    if (diff > 1) {
+      setMessage("change exactly one letter.");
+      return;
+    }
+
+    if (!isValidWord(word)) {
+      setMessage("that word isn't in the dictionary.");
+      return;
+    }
+
+    if ([wcStart, ...wcChain].includes(word)) {
+      setMessage("you already used that word.");
+      return;
+    }
+
+    setAnswerTimes((existing) => [
+      ...existing,
+      (Date.now() - roundStartedAt.current) / 1000,
+    ]);
+    roundStartedAt.current = Date.now();
+
+    setInput("");
+
+    if (word !== wcEnd) {
+      setWcChain((chain) => [...chain, word]);
+      setMessage("good, keep going.");
+      return;
+    }
+
+    // target reached: stop the stopwatch and end the run
+    setRushTotalTime((Date.now() - (rushStartTime ?? Date.now())) / 1000);
+    setScore((value) => value + 1);
+    setMessage("ladder complete!");
+    setGameOver(true);
   };
 
   // goToStart(): takes nothing, returns nothing. Called when the title is
@@ -1062,12 +1503,26 @@ export default function App() {
   // startGame(): takes nothing, returns nothing. Begins a new run with the
   // current settings. Bumps the global counter, creates a new runIdRef UUID for
   // the leaderboard, and clears pendingRun and highlightRanks. Picks the first
-  // prompt and resets input, lives (to timedLives), score, rush values, used
-  // words, letters, answer times, missed prompts and the message. Sets the clock
-  // to roundTime for timed mode (0 otherwise), sets gameOver false and started
-  // true, records roundStartedAt, focuses the input, and for rush-style modes
-  // saves rushStartTime so the stopwatch effect runs.
+  // prompt (7 letters for anagram, a start/target pair for word change) and
+  // resets input, lives (to timedLives), score, rush values, used words,
+  // letters, answer times, missed prompts and the message. Sets the clock to
+  // roundTime for timed mode (0 otherwise) and the anagram clock to
+  // ANAGRAM_SECONDS, sets gameOver false and started true, records
+  // roundStartedAt, focuses the input, and for rush-style modes and anagram
+  // saves rushStartTime so the matching clock effect runs.
   const startGame = () => {
+    if (gameMode === "daily") {
+      const existing = readDaily();
+      if (existing) {
+        setDailyRecord(existing);
+        return;
+      }
+      const record: DailyRecord = { date: todayKey(), time: null };
+      writeDaily(record); // marked as played the moment it starts
+      setDailyRecord(record);
+      dailyPromptsRef.current = buildDailyPrompts(todayKey());
+    }
+
     countGamePlayed(setGamesPlayed);
 
     runIdRef.current = crypto.randomUUID();
@@ -1079,12 +1534,29 @@ export default function App() {
     const startingLives = timedLives;
 
     mathPromptHistoryRef.current.clear();
-    const nextPrompt = pickPrompt(difficulty, gameMode);
     const now = Date.now();
-    if (gameMode === "startEnd")
+
+    if (gameMode === "anagram") {
+      const nextAnagram = makeAnagramPrompt();
+      setAnagramLetters(nextAnagram.fragment);
+      setPromptExamples(nextAnagram.examples);
+    } else if (gameMode === "wordChange") {
+      // no difficulty picker for this mode: always the 4-letter, short ladders
+      const ladder = makeWordChangePrompt("superEasy");
+      const [ladderStart, ladderEnd = ""] = ladder.fragment.split("-");
+      setWcStart(ladderStart);
+      setWcEnd(ladderEnd);
+      setWcChain([]);
+      setPromptExamples(ladder.examples);
+    } else if (gameMode === "startEnd") {
       setStartEndPrompt(pickStartEndPrompt(difficulty));
-    else if (isMathMode(gameMode)) setMathPrompt(getNextMathPrompt());
-    else {
+    } else if (isMathMode(gameMode)) {
+      setMathPrompt(getNextMathPrompt());
+    } else {
+      const nextPrompt =
+        gameMode === "daily"
+          ? dailyPromptsRef.current[0]
+          : pickPrompt(difficulty, gameMode);
       setPrompt(nextPrompt.fragment);
       setPromptExamples(nextPrompt.examples);
     }
@@ -1095,6 +1567,7 @@ export default function App() {
     setRushWords(0);
     setRushElapsed(0);
     setRushTotalTime(null);
+    setAnagramLeft(ANAGRAM_SECONDS);
 
     if (gameMode === "timed") {
       setTime(roundTime);
@@ -1107,11 +1580,15 @@ export default function App() {
     setAnswerTimes([]);
     setMissedPrompts([]);
     setMessage(
-      gameMode === "startEnd"
-        ? "enter a word matching both ends."
-        : isMathMode(gameMode)
-          ? "solve the equation."
-          : "enter a word containing the letters.",
+      gameMode === "anagram"
+        ? "make words using only the letters."
+        : gameMode === "wordChange"
+          ? "change one letter at a time."
+          : gameMode === "startEnd"
+            ? "enter a word matching both ends."
+            : isMathMode(gameMode)
+              ? "solve the equation."
+              : "enter a word containing the letters.",
     );
     setGameOver(false);
     setStarted(true);
@@ -1119,13 +1596,7 @@ export default function App() {
     roundStartedAt.current = now;
     focusWordInput();
 
-    if (
-      gameMode === "rush" ||
-      gameMode === "alphabet" ||
-      gameMode === "sevenRush" ||
-      gameMode === "startEnd" ||
-      isMathMode(gameMode)
-    ) {
+    if (isRushMode(gameMode) || gameMode === "anagram") {
       setRushStartTime(now);
     } else {
       setRushStartTime(null);
@@ -1186,7 +1657,8 @@ export default function App() {
   // Effect 5, qualify for the leaderboard (ranked games). Re-runs when gameOver,
   // started, gameMode, difficulty, roundTime, score or rushTotalTime changes.
   // Does nothing unless the game is over, started and in a ranked mode (not
-  // zen), there is a run id, and (for rush-style modes) rushTotalTime is set.
+  // zen, anagram or word change), there is a run id, and (for rush-style modes)
+  // rushTotalTime is set.
   // Clears runIdRef so it runs only once per game, then computes the final score
   // (rounded milliseconds for rush modes, word count for timed) and the
   // round-time argument (only for timed). Asks wouldQualify about the all-time
@@ -1201,12 +1673,7 @@ export default function App() {
     const runId = runIdRef.current;
     if (!runId) return;
 
-    const isRush =
-      gameMode === "rush" ||
-      gameMode === "alphabet" ||
-      gameMode === "sevenRush" ||
-      gameMode === "startEnd" ||
-      isMathMode(gameMode);
+    const isRush = isRushMode(gameMode);
 
     if (isRush && rushTotalTime === null) {
       return;
@@ -1273,22 +1740,12 @@ export default function App() {
     const rankedMode = leaderboardModeFor(gameMode, difficulty);
     if (!gameOver || !started || !rankedMode) return;
 
-    const finalScore =
-      gameMode === "rush" ||
-        gameMode === "alphabet" ||
-        gameMode === "sevenRush" ||
-        gameMode === "startEnd" ||
-        isMathMode(gameMode)
-        ? Math.round((rushTotalTime ?? 0) * 1000)
-        : score;
+    const finalScore = isRushMode(gameMode)
+      ? Math.round((rushTotalTime ?? 0) * 1000)
+      : score;
 
     if (
-      (gameMode === "rush" ||
-        gameMode === "alphabet" ||
-        gameMode === "sevenRush" ||
-        gameMode === "startEnd" ||
-        isMathMode(gameMode)) &&
-      rushTotalTime === null
+      isRushMode(gameMode) && rushTotalTime === null
     ) {
       return;
     }
@@ -1392,7 +1849,10 @@ export default function App() {
   // renderDifficulty(): takes nothing, returns JSX. Draws the difficulty picker:
   // maps over DIFFICULTY_OPTIONS to make one button each, highlights the
   // selected one, and calls setDifficulty on click. It is a function so the
-  // start screen and results screen can both reuse it.
+  // start screen and results screen can both reuse it. In modes where
+  // difficulty does nothing (noDifficultyMode: anagram, word change, daily) the
+  // buttons are disabled, dimmed and show no selection. The stored difficulty is
+  // left alone, so it comes back when you switch to another mode.
   const renderDifficulty = () => (
     // DIFFICULTY PICKER: easy/hard changes word-pool difficulty for word modes
     // and switches math between one-digit answers and harder calculations.
@@ -1407,8 +1867,12 @@ export default function App() {
           <button
             type="button"
             key={option.value}
+            disabled={noDifficultyMode(gameMode)}
+            style={noDifficultyMode(gameMode) ? { opacity: 0.4 } : undefined}
             className={
-              difficulty === option.value ? "option selected" : "option"
+              !noDifficultyMode(gameMode) && difficulty === option.value
+                ? "option selected"
+                : "option"
             }
             onClick={() => setDifficulty(option.value)}
           >
@@ -1432,13 +1896,12 @@ export default function App() {
   );
 
   // renderMode(): takes nothing, returns JSX. Draws the mode picker and the
-  // multiplayer button. Buttons sit on a six-column grid; the first two span
-  // three columns and the rest span two, giving a wide top row and a narrower
-  // second row. Clicking a mode calls setGameMode; the multiplayer button calls
-  // setScreen("group").
+  // multiplayer button. Buttons sit on a three-column grid; clicking a mode
+  // calls setGameMode, and the multiplayer button calls setScreen("group").
   const renderMode = () => (
     // MODE PICKER: a "mode" label, then a grid of mode buttons (rush, sixrush,
-    // timed, alphabet, zen), then a full-width multiplayer button.
+    // timed, alphabet, zen, start/end, math, daily, anagram, word change), then
+    // a full-width multiplayer button.
     <div className="setting">
       <small>mode</small>
 
@@ -1581,7 +2044,7 @@ export default function App() {
         <GroupGame
           onExit={() => setScreen("solo")}
           makePrompts={makeGroupPrompts}
-          isValidWord={(w) => DICTIONARY.has(w) || MODERN_WORDS.has(w)}
+          isValidWord={isValidWord}
         />
       </main>
     );
@@ -1621,7 +2084,7 @@ export default function App() {
                 <span className="lives">{hearts || "—"}</span>
               )}
 
-              {/* Rush / sixrush / alphabet only: live stopwatch with one decimal */}
+              {/* Rush / sixrush / alphabet / word change etc.: live stopwatch with one decimal */}
               {isRushMode(gameMode) && (
                 <span className="timer2">{rushElapsed.toFixed(1)}s</span>
               )}
@@ -1698,6 +2161,41 @@ export default function App() {
               <strong>alphabet</strong>
 
               <p>keep filling in words until you get all 26 letters</p>
+            </div>
+
+            {/* Rules for daily mode */}
+            <div className="rules-section">
+              <strong>daily</strong>
+
+              <p>
+                the same 5 prompts for everyone each day (resets at midnight
+                UTC). you only get one attempt per device. fastest time wins
+                and daily scores are ranked.
+              </p>
+            </div>
+
+            {/* Rules for anagram mode (7 letters, countdown, points per word) */}
+            <div className="rules-section">
+              <strong>anagram</strong>
+
+              <p>
+                you get 7 letters and {ANAGRAM_SECONDS} seconds. make as many
+                words as you can using only those letters (repeats allowed).
+                each word scores its length minus 2, and using all 7 letters
+                gives +7. highest score wins and anagram scores are ranked.
+              </p>
+            </div>
+
+            {/* Rules for word change mode (one ladder, fastest time) */}
+            <div className="rules-section">
+              <strong>word change</strong>
+
+              <p>
+                turn the first word into the target word by changing one letter
+                at a time. every step must be a real word. one ladder, and your
+                final time is your score. fastest time wins and word change
+                scores are ranked.
+              </p>
             </div>
 
             {/* Rules for zen mode (no timer, no lives, not ranked) */}
@@ -1830,11 +2328,12 @@ export default function App() {
               </button>
             </div>
 
-            {/* Board contents: zen mode shows a "not ranked" notice, any other
-                mode shows the leaderboard table for the chosen period */}
-            {gameMode === "zen" ? (
+            {/* Board contents: zen has no leaderboard key and shows a "not ranked"
+                notice, any other mode shows the
+                leaderboard table for the chosen period */}
+            {!leaderboardModeFor(gameMode, difficulty) ? (
               <p>
-                zen mode isn't ranked. pick another mode to view its
+                this mode isn't ranked. pick another mode to view its
                 leaderboard.
               </p>
             ) : (
@@ -1905,8 +2404,13 @@ export default function App() {
                 type="button"
                 className="play-again start-button"
                 onClick={startGame}
+                disabled={dailyLocked}
               >
-                start game (space)
+                {dailyLocked
+                  ? dailyRecord?.time != null
+                    ? `today's time: ${dailyRecord.time.toFixed(2)}s · back tomorrow`
+                    : "already played today · back tomorrow"
+                  : "start game (space)"}
               </button>
 
               {/* Opens the leaderboard modal */}
@@ -1930,26 +2434,36 @@ export default function App() {
         ) : gameOver ? (
           <div className="results-screen">
             {/* RESULTS SCREEN: headline result. The small label says "run
-                complete" for rush-style/zen modes or "game over" for timed. */}
+                complete" for rush-style/zen modes or "game over" for timed and
+                anagram. */}
             <div className="results-header">
               <small>
                 {gameMode === "zen" ||
+                  gameMode === "daily" ||
                   gameMode === "rush" ||
                   gameMode === "alphabet" ||
                   gameMode === "sevenRush" ||
                   gameMode === "startEnd" ||
+                  gameMode === "wordChange" ||
                   isMathMode(gameMode)
                   ? "run complete"
                   : "game over"}
               </small>
 
-              {/* Big number: final time in seconds (rush-style) or final word count */}
+              {/* Big number: final time in seconds (rush-style) or final score
+                  (word count for timed, points for anagram) */}
               <h2>
                 {isRushMode(gameMode) ? rushTotalTime?.toFixed(2) : score}
               </h2>
 
               {/* Unit label under the big number */}
-              <p>{isRushMode(gameMode) ? "seconds" : "words this run"}</p>
+              <p>
+                {isRushMode(gameMode)
+                  ? "seconds"
+                  : gameMode === "anagram"
+                    ? "points"
+                    : "words this run"}
+              </p>
             </div>
 
             {/* Row of stat boxes summarising the run */}
@@ -2085,20 +2599,31 @@ export default function App() {
               {renderMode()}
 
               {/* Play-again button; its label changes with the selected mode */}
-              <button type="button" className="play-again" onClick={reset}>
-                {gameMode === "rush"
-                  ? "run again (space)"
-                  : gameMode === "sevenRush"
-                    ? "run sixrush again (space)"
-                    : gameMode === "alphabet"
-                      ? "start alphabet"
-                      : gameMode === "startEnd"
-                        ? "run start/end again (space)"
-                        : isMathMode(gameMode)
-                          ? "run math challenge again (space)"
-                          : gameMode === "zen"
-                            ? "start zen game"
-                            : "play again"}
+              <button
+                type="button"
+                className="play-again"
+                onClick={reset}
+                disabled={dailyLocked}
+              >
+                {gameMode === "daily"
+                  ? "daily done · back tomorrow"
+                  : gameMode === "rush"
+                    ? "run again (space)"
+                    : gameMode === "sevenRush"
+                      ? "run sixrush again (space)"
+                      : gameMode === "alphabet"
+                        ? "start alphabet"
+                        : gameMode === "startEnd"
+                          ? "run start/end again (space)"
+                          : isMathMode(gameMode)
+                            ? "run math challenge again (space)"
+                            : gameMode === "anagram"
+                              ? "play anagram again (space)"
+                              : gameMode === "wordChange"
+                                ? "new ladder (space)"
+                                : gameMode === "zen"
+                                  ? "start zen game"
+                                  : "play again"}
               </button>
             </div>
           </div>
@@ -2120,9 +2645,15 @@ export default function App() {
                           ? "ZEN MODE"
                           : gameMode === "startEnd"
                             ? "START / END"
-                            : isMathMode(gameMode)
-                              ? "MATH"
-                              : "TIME LEFT"}
+                            : gameMode === "daily"
+                              ? "DAILY"
+                              : gameMode === "anagram"
+                                ? "ANAGRAM"
+                                : gameMode === "wordChange"
+                                  ? "WORD CHANGE"
+                                  : isMathMode(gameMode)
+                                    ? "MATH"
+                                    : "TIME LEFT"}
                 </small>
 
                 {/* Timed: seconds left for this word (turns red at 3s or less) */}
@@ -2135,10 +2666,25 @@ export default function App() {
                 {/* Zen: an infinity symbol since there's no timer */}
                 {gameMode === "zen" && <div className="timer">∞</div>}
 
-                {/* Rush / sixrush: words completed out of 10 */}
-                {isRushMode(gameMode) && gameMode !== "alphabet" && (
-                  <div className="timer">{rushWords}/10</div>
+                {/* Anagram: seconds left on the whole round (red at 5s or less) */}
+                {gameMode === "anagram" && (
+                  <div className={anagramLeft <= 5 ? "timer danger" : "timer"}>
+                    {anagramLeft.toFixed(1)}s
+                  </div>
                 )}
+
+                {/* Word change: running stopwatch for the single ladder */}
+                {gameMode === "wordChange" && (
+                  <div className="timer">{rushElapsed.toFixed(1)}s</div>
+                )}
+
+                {/* Rush / sixrush: words completed out of 10 (word change has no
+                    word count, so it is left out) */}
+                {isRushMode(gameMode) &&
+                  gameMode !== "alphabet" &&
+                  gameMode !== "wordChange" && (
+                    <div className="timer">{rushWords}/{rushTarget}</div>
+                  )}
 
                 {/* Alphabet: letters collected out of 26 */}
                 {gameMode === "alphabet" && (
@@ -2147,21 +2693,43 @@ export default function App() {
               </div>
 
               {/* Restart button (⟳): starts a fresh game with the same settings */}
-              <button
-                type="button"
-                className="restart-button"
-                onClick={reset}
-                aria-label="redo"
-                title="Restart game"
-              >
-                ⟳
-              </button>
+              {gameMode !== "daily" && (
+                <button
+                  type="button"
+                  className="restart-button"
+                  onClick={reset}
+                  aria-label="redo"
+                  title="Restart game"
+                >
+                  ⟳
+                </button>
+              )}
             </div>
 
             {/* PROMPT: the big letter fragment the player must use, in capitals,
                 with an instruction line under it */}
             <div className="prompt">
-              {gameMode === "startEnd" ? (
+              {gameMode === "anagram" ? (
+                <>
+                  <small>USE ONLY THESE LETTERS</small>
+                  <strong>
+                    {anagramLetters.toUpperCase().split("").join(" ")}
+                  </strong>
+                  <p>
+                    {ANAGRAM_MIN_LENGTH}+ letters, repeats allowed. longer =
+                    more points. all 7 letters = +7.
+                  </p>
+                </>
+              ) : gameMode === "wordChange" ? (
+                <>
+                  <small>CHANGE ONE LETTER AT A TIME</small>
+                  <strong>
+                    {wcStart.toUpperCase()} → {wcEnd.toUpperCase()}
+                  </strong>
+                  {/* The steps so far, starting from the given word */}
+                  <p>{[wcStart, ...wcChain].join(" → ")}</p>
+                </>
+              ) : gameMode === "startEnd" ? (
                 <>
                   <small>START WITH / END WITH</small>
                   <strong>
@@ -2188,17 +2756,28 @@ export default function App() {
               )}
             </div>
 
-            {/* ANSWER FORM: pressing enter or clicking the button submits the word */}
-            <form onSubmit={submit}>
+            {/* ANSWER FORM: pressing enter or clicking the button submits the
+                word. Anagram and word change have their own submit handlers. */}
+            <form
+              onSubmit={
+                gameMode === "anagram"
+                  ? submitAnagram
+                  : gameMode === "wordChange"
+                    ? submitWordChange
+                    : submit
+              }
+            >
               <label htmlFor="word">
                 {isMathMode(gameMode) ? "your answer" : "your word"}
               </label>
 
-              {/* Text box (letters only, auto-lowercased) and the enter button */}
+              {/* Text box (letters only, auto-lowercased) and the enter button.
+                  Word change limits it to the ladder's word length. */}
               <div className="entry">
                 <input
                   id="word"
                   value={input}
+                  maxLength={gameMode === "wordChange" ? wcStart.length : undefined}
                   onChange={(e) =>
                     setInput(
                       isMathMode(gameMode)
@@ -2225,6 +2804,22 @@ export default function App() {
               {/* Feedback line: "good word!", validation errors, or the missed-
                   prompt hint */}
               <div className="message">{message}</div>
+
+              {/* Word change only: removes the last step you typed */}
+              {gameMode === "wordChange" && wcChain.length > 0 && (
+                <button
+                  type="button"
+                  className="lb-skip"
+                  onClick={() => setWcChain((chain) => chain.slice(0, -1))}
+                >
+                  undo last step
+                </button>
+              )}
+
+              {/* Anagram only: the words you've found, newest first */}
+              {gameMode === "anagram" && used.size > 0 && (
+                <p className="rule">{[...used].reverse().join(" · ")}</p>
+              )}
 
               {/* Zen only: button to end the run, since zen has no timer or lives */}
               {gameMode === "zen" && (

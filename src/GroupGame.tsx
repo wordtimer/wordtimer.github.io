@@ -41,6 +41,11 @@ const COUNTDOWN_SECONDS = 3;
 const TIMEOUT_GRACE_MS = 300; // host waits a hair past the deadline before failing a turn
 const BACKUP_GRACE_MS = 2000; // non-host clients step in if the host is stalled
 
+const ANAGRAM_SECONDS = 60;
+const ANAGRAM_GRACE_S = 1.5; // wait for final progress saves before showing results
+const ANAGRAM_MIN_LENGTH = 3;
+const WORD_CHANGE_PUZZLES = 3;
+
 /* ==========================================================================
  * SHARED CLOCK
  * Every device estimates (serverTime - localTime) and uses now() instead of
@@ -120,9 +125,7 @@ export type GroupMode =
   | "sixrush"
   | "alphabet"
   | "timed"
-  | "survival"
-  | "startEnd"
-  | "math";
+  | "survival" | "startEnd" | "math" | "anagram" | "wordChange";
 
 // PromptItem.fragment meaning depends on the mode:
 //   word modes: the letters to include ("ing")
@@ -222,6 +225,16 @@ const MODE_OPTIONS: { value: GroupMode; label: string; hint: string }[] = [
     label: "math",
     hint: `${TARGET_WORDS} arithmetic problems`,
   },
+  {
+    value: "anagram",
+    label: "anagram",
+    hint: `${ANAGRAM_SECONDS}s, words from 7 letters`,
+  },
+  {
+    value: "wordChange",
+    label: "word change",
+    hint: `${WORD_CHANGE_PUZZLES} ladders, 1 letter at a time`,
+  },
 ];
 
 // Difficulty hints for startEnd (the fragment pools are sized differently from
@@ -243,7 +256,13 @@ const isMathMode = (mode: GroupMode): mode is "math" => mode === "math";
 // problems).
 // How much "progress" a player needs to finish a race mode.
 const targetOf = (mode: GroupMode) =>
-  mode === "alphabet" ? ALPHABET_TARGET : TARGET_WORDS;
+  mode === "alphabet"
+    ? ALPHABET_TARGET
+    : mode === "wordChange"
+      ? WORD_CHANGE_PUZZLES
+      : mode === "anagram"
+        ? Infinity
+        : TARGET_WORDS;
 
 // promptCountFor(mode): takes a GroupMode, returns how many prompts to
 // generate. Rush, sixrush, startEnd and the math modes need exactly 20.
@@ -252,14 +271,27 @@ const targetOf = (mode: GroupMode) =>
 // How many fragments to generate. Alphabet, timed, and survival have no fixed length,
 // so they get a pool that wraps around if it ever runs out.
 const promptCountFor = (mode: GroupMode) =>
-  mode === "alphabet" || mode === "timed" || mode === "survival"
-    ? PROMPT_POOL_SIZE
-    : TARGET_WORDS;
+  mode === "anagram"
+    ? 1
+    : mode === "wordChange"
+      ? WORD_CHANGE_PUZZLES
+      : mode === "alphabet" || mode === "timed" || mode === "survival"
+        ? PROMPT_POOL_SIZE
+        : TARGET_WORDS;
 
 // displayPrompt(fragment, mode): takes a prompt fragment and the mode, returns
 // the text to show in big letters. startEnd fragments ("b-a") become "B … A";
 // math problems and normal fragments are just uppercased.
 function displayPrompt(fragment: string, mode: GroupMode) {
+
+  if (mode === "anagram") return fragment.toUpperCase().split("").join(" ");
+
+  if (mode === "wordChange") {
+    const [s, e = ""] = fragment.split("-");
+
+    return `${s.toUpperCase()} → ${e.toUpperCase()}`;
+  }
+
   if (mode === "startEnd") {
     const [start, end] = fragment.split("-");
 
@@ -472,6 +504,64 @@ function makeMathPrompts(
     prompts.push(prompt);
   }
   return prompts;
+}
+
+const isPangram = (word: string, letters: string) =>
+  [...letters].every((c) => word.includes(c));
+
+const anagramPoints = (word: string, letters: string) =>
+  word.length - 2 + (isPangram(word, letters) ? 7 : 0);
+
+// Letters may repeat, but every character must come from the 7 given letters.
+function checkAnagram(
+  word: string,
+  letters: string,
+  isValidWord: (w: string) => boolean,
+  used: { has: (w: string) => boolean },
+): string | null {
+  if (!/^[a-z]+$/.test(word)) return "use letters only.";
+
+  if (word.length < ANAGRAM_MIN_LENGTH) {
+    return `your word must be at least ${ANAGRAM_MIN_LENGTH} letters.`;
+  }
+
+  for (const c of word) {
+    if (!letters.includes(c)) {
+      return `"${c.toUpperCase()}" isn't one of the letters.`;
+    }
+  }
+
+  if (!isValidWord(word)) return "that word isn't in the dictionary.";
+
+  if (used.has(word)) return "you already used that word.";
+
+  return null;
+}
+
+// Exactly one letter different from the current word, a real word, not reused.
+function checkWordChange(
+  word: string,
+  current: string,
+  isValidWord: (w: string) => boolean,
+  seen: string[],
+): string | null {
+  if (!/^[a-z]+$/.test(word)) return "use letters only.";
+
+  if (word.length !== current.length) {
+    return `use a ${current.length}-letter word.`;
+  }
+
+  let diff = 0;
+  for (let i = 0; i < word.length; i++) if (word[i] !== current[i]) diff++;
+
+  if (diff === 0) return "that's the same word.";
+  if (diff > 1) return "change exactly one letter.";
+
+  if (!isValidWord(word)) return "that word isn't in the dictionary.";
+
+  if (seen.includes(word)) return "you already used that word.";
+
+  return null;
 }
 
 // checkAnswer(word, prompt, mode, isValidWord, used): the single entry point
@@ -1138,6 +1228,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
   const [message, setMessage] = useState("");
   const [used, setUsed] = useState<Set<string>>(new Set());
   const [letters, setLetters] = useState<Set<string>>(new Set()); // alphabet
+  const [chain, setChain] = useState<string[]>([]); // word change: my steps after the start word
   const [countdown, setCountdown] = useState(0);
   const [raceTime, setRaceTime] = useState(0);
   const [gameElapsed, setGameElapsed] = useState(0);
@@ -1157,12 +1248,16 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
   const isTimed = mode === "timed" || mode === "survival";
   const isSurvival = mode === "survival";
   const isMath = isMathMode(mode);
+
+  const isAnagram = mode === "anagram";
+  const isWordChange = mode === "wordChange";
+  const isRaceMode = !isTimed && !isAnagram && !isWordChange; // generic race UI
   const target = targetOf(mode);
   const ts = game?.turn_state ?? null;
 
   // unitName: what a player is answering in race modes ("words" or "problems"),
   // used in the goal and results text.
-  const unitName = isMath ? "problems" : "words";
+  const unitName = isMath ? "problems" : isWordChange ? "puzzles" : "words";
 
   // inputFilter: characters allowed in the answer box. Math modes take digits
   // only; every other mode takes letters only.
@@ -1319,6 +1414,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
       setMessage("");
       setUsed(new Set());
       setLetters(new Set());
+      setChain([]);
     }
   }, [game?.game_number]);
 
@@ -1528,6 +1624,13 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
   const raceIsOver =
     !!raceWinner && (game?.finish_mode === "first" || everyoneFinished);
 
+  // computed from the shared clock directly, so a stale raceTime can't flash results
+  const anagramOver =
+    isAnagram &&
+    !!game?.started_at &&
+    now() - new Date(game?.started_at ?? 0).getTime() >=
+      (ANAGRAM_SECONDS + ANAGRAM_GRACE_S) * 1000;
+
   // ---- timed ----
   // timedRanking: survivors first, then eliminated players in reverse order of
   // elimination (last out ranks higher). The first entry is the winner.
@@ -1598,7 +1701,13 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
   const myTurn =
     !!ts && ts.current === me && (isSurvival ? myRemaining > 0 : myLives > 0);
 
-  const winner = isTimed ? (timedRanking[0] ?? null) : raceWinner;
+  const winner = isTimed
+    ? (timedRanking[0] ?? null)
+    : isAnagram
+      ? ranked[0] && ranked[0].progress > 0
+        ? ranked[0]
+        : null
+      : raceWinner;
 
   // ---- my progress in a race ----
   const myProgress = mode === "alphabet" ? letters.size : index;
@@ -1609,6 +1718,9 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
       ? game.prompts[index % game.prompts.length]
       : undefined;
 
+  const [wcStart, wcEnd = ""] = (currentPrompt?.fragment ?? "-").split("-");
+  const wcCurrent = chain[chain.length - 1] ?? wcStart;
+
   // phase: which screen to draw, derived from state. No room -> menu; no game
   // or status waiting -> lobby; game over -> results; countdown still running ->
   // countdown; otherwise race.
@@ -1616,7 +1728,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     ? "menu"
     : !game || game.status === "waiting"
       ? "lobby"
-      : (isTimed ? timedOver : raceIsOver)
+      : (isTimed ? timedOver : isAnagram ? anagramOver : raceIsOver)
         ? "results"
         : countdown > 0
           ? "countdown"
@@ -2121,6 +2233,85 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     }
   };
 
+  const handleAnagramSubmit = (event: FormEvent) => {
+    event.preventDefault();
+
+    const startMs = game?.started_at ? new Date(game.started_at).getTime() : NaN;
+
+    if (!currentPrompt || !Number.isFinite(startMs) || now() < startMs) return;
+
+    if (now() >= startMs + ANAGRAM_SECONDS * 1000) {
+      setMessage("time's up!");
+      return;
+    }
+
+    const word = input.trim().toLowerCase();
+    const problem = checkAnagram(word, currentPrompt.fragment, isValidWord, used);
+
+    if (problem) {
+      setMessage(problem);
+      return;
+    }
+
+    const points = anagramPoints(word, currentPrompt.fragment);
+    const nextScore = index + points; // `index` doubles as my score in anagram
+
+    setUsed((cur) => new Set(cur).add(word));
+    setIndex(nextScore);
+    setInput("");
+    setMessage(
+      isPangram(word, currentPrompt.fragment)
+        ? `pangram! +${points}`
+        : `+${points}`,
+    );
+
+    queueSave(() => saveProgress(nextScore));
+  };
+
+  const handleWordChangeSubmit = (event: FormEvent) => {
+    event.preventDefault();
+
+    if (!game?.started_at || now() < new Date(game.started_at).getTime()) return;
+
+    if (!currentPrompt || iFinished) return;
+
+    const word = input.trim().toLowerCase();
+    const problem = checkWordChange(word, wcCurrent, isValidWord, [
+      wcStart,
+      ...chain,
+    ]);
+
+    if (problem) {
+      setMessage(problem);
+      return;
+    }
+
+    setInput("");
+
+    if (word !== wcEnd) {
+      setChain((c) => [...c, word]);
+      setMessage("good, keep going.");
+      return;
+    }
+
+    // puzzle solved
+    const nextIndex = index + 1;
+
+    setIndex(nextIndex);
+    setChain([]);
+    setMessage(nextIndex >= target ? "" : "solved!");
+
+    if (nextIndex >= target) {
+      // progress first, then the finish RPC (server checks progress >= target)
+      queueSave(async () => {
+        await saveProgress(target);
+        await saveFinished(target);
+      });
+    } else {
+      queueSave(() => saveProgress(nextIndex));
+    }
+  };
+
   // handleTimedSubmit(event): takes a form event, returns nothing. Word
   // submission for timed and survival. Only works on your own turn, after the
   // countdown, and before skipDeadline plus the grace (otherwise it shows "too
@@ -2264,6 +2455,43 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     </div>
   );
 
+  const renderAnagramBoard = () => {
+    const rows = phase === "results" ? ranked : players;
+    const top = Math.max(1, ...players.map(progressOf));
+
+    return (
+      <div className="mp-board">
+        {rows.map((p) => {
+          const pts = progressOf(p);
+          const isWinner =
+            phase === "results" && winner?.player_id === p.player_id;
+
+          return (
+            <div
+              key={p.player_id}
+              className={p.player_id === me ? "mp-row mp-me" : "mp-row"}
+            >
+              <span className="mp-name">
+                {isWinner && (
+                  <span style={{ marginRight: "6px", fontSize: "15px" }}>
+                    👑
+                  </span>
+                )}
+                {p.display_name}
+              </span>
+
+              <div className="mp-bar">
+                <i style={{ width: `${(pts / top) * 100}%` }} />
+              </div>
+
+              <span className="mp-count">{pts} pts</span>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
   // renderTimedBoard(): takes nothing, returns JSX (or null with no turn
   // state). The timed/survival scoreboard: one row per player with their name,
   // a bar for lives left (timed) or time bank left out of 60s (survival), and
@@ -2350,8 +2578,13 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
   // goalText: the one-line goal shown on the countdown screen, chosen by mode
   // (survival, timed, or race with first/last finish mode and alphabet or
   // word/problem target).
-  const goalText = isSurvival
-    ? "one life each. 60 seconds total per player. turns auto-skip after 15 seconds."
+  const goalText = isAnagram
+    ? `make as many words as you can in ${ANAGRAM_SECONDS}s. letters can repeat. use all 7 for +7.`
+    : isWordChange
+      ? `change one letter at a time to reach the target word. ${
+          game?.finish_mode === "last" ? "everyone must solve" : "first to solve"
+        } ${WORD_CHANGE_PUZZLES} ladders${game?.finish_mode === "last" ? "" : " wins"}.`
+      : isSurvival ? "one life each. 60 seconds total per player. turns auto-skip after 15 seconds."
     : isTimed
       ? `last player standing wins. ${ts?.maxLives ?? timedLives} lives each.`
       : game?.finish_mode === "last"
@@ -2615,7 +2848,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
                     </button>
                   </div>
                 </>
-              ) : modeChoice === "survival" ? (
+              ) : modeChoice === "survival" || modeChoice === "anagram" ? (
                 // Survival has no extra settings, so this renders an empty block
                 <div className="setting"></div>
               ) : (
@@ -2667,7 +2900,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
               {/* DIFFICULTY PICKER (host only): math uses this same easy/hard
                   choice to control question difficulty; word modes use their
                   fragment pools, and start/end has its own pool-size hints. */}
-              {
+              {modeChoice !== "anagram" && (
                 <>
                   <div className="divider" />
 
@@ -2712,8 +2945,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
                               ? option.value === "superEasy"
                                 ? "answers up to 99"
                                 : "harder calculations"
-                              : modeChoice === "startEnd"
-                                ? START_END_HINTS[option.value]
+                              : modeChoice === "wordChange" ? (option.value === "superEasy" ? "4 letters, short ladders" : "5 letters, long ladders") : modeChoice === "startEnd" ? START_END_HINTS[option.value]
                                 : option.hint}
                           </span>
                         </button>
@@ -2721,7 +2953,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
                     </div>
                   </div>
                 </>
-              }
+              )}
 
               {/* START BUTTON (host only): disabled until 2+ players have joined;
                   the label reads "waiting for players (1/2)" until then */}
@@ -2770,7 +3002,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
       {/* RACE (rush / sixrush / alphabet / startEnd / math): everyone answers at
           their own pace through the same prompt list; the scoreboard shows live
           progress. */}
-      {phase === "race" && !isTimed && (
+      {phase === "race" && isRaceMode && (
         <div className="mp-race">
           {/* Shared race stopwatch (seconds since the start, two decimals) */}
           <div className="timer">{raceTime.toFixed(2)}s</div>
@@ -2869,6 +3101,137 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
           {renderScoreboard()}
 
           {/* Connection warning (only if polling fails) */}
+          {syncError && <div className="message">{syncError}</div>}
+        </div>
+      )}
+
+      {/* ============ RACE (anagram) ============ */}
+      {phase === "race" && isAnagram && currentPrompt && (
+        <div className="mp-race">
+          <div className="timer">
+            {Math.max(0, ANAGRAM_SECONDS - raceTime).toFixed(1)}s
+          </div>
+
+          <div className="prompt">
+            <small>YOUR SCORE · {myProgress}</small>
+
+            <strong>{displayPrompt(currentPrompt.fragment, mode)}</strong>
+
+            <p>
+              3+ letter words using only these letters. repeats allowed. longer
+              = more points. all 7 letters = +7.
+            </p>
+          </div>
+
+          <form onSubmit={handleAnagramSubmit}>
+            <div className="entry">
+              <input
+                id="mp-word"
+                value={input}
+                onChange={(e) =>
+                  setInput(
+                    e.target.value.replace(/[^a-zA-Z]/g, "").toLowerCase(),
+                  )
+                }
+                autoFocus
+                autoComplete="off"
+                placeholder="type a word..."
+              />
+
+              <button type="submit">enter</button>
+            </div>
+
+            <div className="message">{message}</div>
+          </form>
+
+          {used.size > 0 && (
+            <p className="rule">{[...used].reverse().join(" · ")}</p>
+          )}
+
+          <div className="divider" />
+
+          {renderAnagramBoard()}
+
+          {syncError && <div className="message">{syncError}</div>}
+        </div>
+      )}
+
+      {/* ============ RACE (word change) ============ */}
+      {phase === "race" && isWordChange && (
+        <div className="mp-race">
+          <div className="timer">{raceTime.toFixed(2)}s</div>
+
+          {iFinished ? (
+            <div className="results-header">
+              <small>you finished!</small>
+
+              <h2>
+                {target}/{target}
+              </h2>
+
+              <p>
+                {game?.finish_mode === "last"
+                  ? "waiting for everyone else..."
+                  : "confirming the winner..."}
+              </p>
+            </div>
+          ) : (
+            <>
+              <div className="prompt">
+                <small>
+                  LADDER {index + 1} OF {WORD_CHANGE_PUZZLES}
+                </small>
+
+                <strong>
+                  {wcStart.toUpperCase()} → {wcEnd.toUpperCase()}
+                </strong>
+
+                <p>change one letter at a time. every step must be a real word.</p>
+              </div>
+
+              <div className="mp-last">
+                <small>{[wcStart, ...chain].join(" → ")}</small>
+                <strong>{wcCurrent}</strong>
+              </div>
+
+              <form onSubmit={handleWordChangeSubmit}>
+                <div className="entry">
+                  <input
+                    id="mp-word"
+                    value={input}
+                    maxLength={wcStart.length}
+                    onChange={(e) =>
+                      setInput(
+                        e.target.value.replace(/[^a-zA-Z]/g, "").toLowerCase(),
+                      )
+                    }
+                    autoFocus
+                    autoComplete="off"
+                    placeholder={`${wcStart.length}-letter word...`}
+                  />
+
+                  <button type="submit">enter</button>
+                </div>
+
+                <div className="message">{message}</div>
+
+                {chain.length > 0 && (
+                  <button
+                    type="button"
+                    className="lb-skip"
+                    onClick={() => setChain((c) => c.slice(0, -1))}
+                  >
+                    undo last step
+                  </button>
+                )}
+              </form>
+            </>
+          )}
+
+          <div className="divider" />
+
+          {renderScoreboard()}
+
           {syncError && <div className="message">{syncError}</div>}
         </div>
       )}
@@ -3007,15 +3370,14 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
             <h2>👑 {winner.display_name} wins</h2>
 
             <p>
-              {isSurvival
-                ? "last player standing with time left"
+              {isAnagram ? "most points" : isSurvival ? "last player standing with time left"
                 : isTimed
                   ? "last player standing"
                   : game?.finish_mode === "last"
                     ? "everyone finished"
                     : mode === "alphabet"
                       ? "first to collect all 26 letters"
-                      : `first to ${TARGET_WORDS} ${unitName}`}
+                      : `first to ${target} ${unitName}`}
             </p>
           </div>
 
@@ -3034,7 +3396,11 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
           )}
 
           {/* Final standings: elimination order (timed/survival) or finish order with times (races) */}
-          {isTimed ? renderTimedBoard() : renderScoreboard()}
+          {isTimed
+            ? renderTimedBoard()
+            : isAnagram
+              ? renderAnagramBoard()
+              : renderScoreboard()}
 
           <div className="divider" />
 
