@@ -30,7 +30,7 @@ const TIMED_SHORT_TIME = 5;
 const TIMED_SHORT_AFTER_WORDS_PER_PLAYER = 20;
 
 // Solo anagram mode: seconds on the clock, and the shortest word that counts.
-const ANAGRAM_SECONDS = 45;
+const ANAGRAM_SECONDS = 60;
 const ANAGRAM_MIN_LENGTH = 3;
 
 const SUPABASE_KEY = "sb_publishable_mB2ZU7RWDpQdPA-mIh8tKw_oxs1_2_B";
@@ -76,7 +76,7 @@ async function loadGamesPlayed(
     const value = await callCounter(COUNTER_GET_URL, {});
 
     if (value !== null) setGamesPlayed(value);
-  } catch { }
+  } catch {}
 }
 
 // countGamePlayed(setGamesPlayed, amount = 1): takes the state setter and how
@@ -92,7 +92,7 @@ async function countGamePlayed(
     const value = await callCounter(COUNTER_HIT_URL, { p_amount: amount });
 
     if (value !== null) setGamesPlayed(value);
-  } catch { }
+  } catch {}
 }
 
 type Difficulty = "superEasy" | "hard";
@@ -343,7 +343,6 @@ function pickMathPrompt(
         answer = a ** b;
         if (answer > 99) continue;
         expression = `${a}^${b}`;
-
       }
     } else if (operation === 0) {
       const a = randomInt(25, 199);
@@ -541,7 +540,6 @@ function buildDailyPrompts(dateKey: string) {
   return pool.slice(0, DAILY_WORDS);
 }
 
-
 // buildPromptPool(difficulty, mode?, minimumOverride?): takes a difficulty, an
 // optional game mode, and an optional replacement minimum. Returns an array of
 // {fragment, count, examples}. It keeps fragments from PROMPT_DATA that appear
@@ -637,7 +635,8 @@ const PANGRAM_SEEDS = ALL_WORDS.filter(
 // words, and falls back to "stearin" if nothing qualifies.
 function makeAnagramPrompt(): PromptItem {
   for (let attempt = 0; attempt < 30; attempt++) {
-    const seed = PANGRAM_SEEDS[Math.floor(Math.random() * PANGRAM_SEEDS.length)];
+    const seed =
+      PANGRAM_SEEDS[Math.floor(Math.random() * PANGRAM_SEEDS.length)];
     if (!seed) break;
     const letters = [...new Set(seed)];
     if (letters.filter((c) => VOWELS.has(c)).length < 2) continue;
@@ -707,12 +706,12 @@ function neighborsOf(word: string, g: WordGraph) {
 // shortest-path distance is in range. If a range fails 150 times it tries a
 // wider one, and finally falls back to cold → warm.
 function makeWordChangePrompt(difficulty: GroupDifficulty): PromptItem {
-  const len = difficulty === "hard" ? 5 : 4;
+  const len = 4;
   const g = getWordGraph(len);
-  const ranges =
-    difficulty === "hard"
-      ? [[5, 7], [4, 7], [3, 7]]
-      : [[3, 4], [2, 4]];
+  const ranges = [
+    [2, 3],
+    [1, 3],
+  ];
 
   for (const [minSteps, maxSteps] of ranges) {
     for (let attempt = 0; attempt < 150; attempt++) {
@@ -738,12 +737,16 @@ function makeWordChangePrompt(difficulty: GroupDifficulty): PromptItem {
 
       const end = candidates[Math.floor(Math.random() * candidates.length)];
       const path: string[] = [];
-      for (let w: string | null = end; w; w = parent.get(w) ?? null) path.push(w);
+      for (let w: string | null = end; w; w = parent.get(w) ?? null)
+        path.push(w);
       path.reverse();
       return { fragment: `${start}-${end}`, examples: path };
     }
   }
-  return { fragment: "cold-warm", examples: ["cold", "cord", "card", "ward", "warm"] };
+  return {
+    fragment: "cold-warm",
+    examples: ["cold", "cord", "card", "ward", "warm"],
+  };
 }
 
 // makeGroupPrompts(count, difficulty, mode?): returns the prompt list passed to
@@ -767,7 +770,8 @@ function makeGroupPrompts(
       seenLadders.add(p.fragment);
       ladders.push(p);
     }
-    while (ladders.length < count) ladders.push(makeWordChangePrompt(difficulty));
+    while (ladders.length < count)
+      ladders.push(makeWordChangePrompt(difficulty));
     return ladders;
   }
 
@@ -1541,7 +1545,7 @@ export default function App() {
       setAnagramLetters(nextAnagram.fragment);
       setPromptExamples(nextAnagram.examples);
     } else if (gameMode === "wordChange") {
-      // no difficulty picker for this mode: always the 4-letter, short ladders
+      // no difficulty picker for this mode: always the easier 4-letter, short ladders
       const ladder = makeWordChangePrompt("superEasy");
       const [ladderStart, ladderEnd = ""] = ladder.fragment.split("-");
       setWcStart(ladderStart);
@@ -1744,9 +1748,7 @@ export default function App() {
       ? Math.round((rushTotalTime ?? 0) * 1000)
       : score;
 
-    if (
-      isRushMode(gameMode) && rushTotalTime === null
-    ) {
+    if (isRushMode(gameMode) && rushTotalTime === null) {
       return;
     }
 
@@ -2169,8 +2171,8 @@ export default function App() {
 
               <p>
                 the same 5 prompts for everyone each day (resets at midnight
-                UTC). you only get one attempt per device. fastest time wins
-                and daily scores are ranked.
+                UTC). you only get one attempt per device. fastest time wins and
+                daily scores are ranked.
               </p>
             </div>
 
@@ -2222,8 +2224,10 @@ export default function App() {
             <div className="rules-section">
               {/* rules modal */}
               <strong>3-day leaderboard</strong>
-              <p>scores stay on the 3-day leaderboard for 3 days. all-time scores are kept.</p>
-
+              <p>
+                scores stay on the 3-day leaderboard for 3 days. all-time scores
+                are kept.
+              </p>
             </div>
           </div>
         </div>
@@ -2439,13 +2443,13 @@ export default function App() {
             <div className="results-header">
               <small>
                 {gameMode === "zen" ||
-                  gameMode === "daily" ||
-                  gameMode === "rush" ||
-                  gameMode === "alphabet" ||
-                  gameMode === "sevenRush" ||
-                  gameMode === "startEnd" ||
-                  gameMode === "wordChange" ||
-                  isMathMode(gameMode)
+                gameMode === "daily" ||
+                gameMode === "rush" ||
+                gameMode === "alphabet" ||
+                gameMode === "sevenRush" ||
+                gameMode === "startEnd" ||
+                gameMode === "wordChange" ||
+                isMathMode(gameMode)
                   ? "run complete"
                   : "game over"}
               </small>
@@ -2683,7 +2687,9 @@ export default function App() {
                 {isRushMode(gameMode) &&
                   gameMode !== "alphabet" &&
                   gameMode !== "wordChange" && (
-                    <div className="timer">{rushWords}/{rushTarget}</div>
+                    <div className="timer">
+                      {rushWords}/{rushTarget}
+                    </div>
                   )}
 
                 {/* Alphabet: letters collected out of 26 */}
@@ -2713,7 +2719,17 @@ export default function App() {
                 <>
                   <small>USE ONLY THESE LETTERS</small>
                   <strong>
-                    {anagramLetters.toUpperCase().split("").join(" ")}
+                    {anagramLetters
+                      .slice(0, 3)
+                      .toUpperCase()
+                      .split("")
+                      .join(" ")}
+                    <br />
+                    {anagramLetters
+                      .slice(3, 7)
+                      .toUpperCase()
+                      .split("")
+                      .join(" ")}
                   </strong>
                   <p>
                     {ANAGRAM_MIN_LENGTH}+ letters, repeats allowed. longer =
@@ -2777,14 +2793,16 @@ export default function App() {
                 <input
                   id="word"
                   value={input}
-                  maxLength={gameMode === "wordChange" ? wcStart.length : undefined}
+                  maxLength={
+                    gameMode === "wordChange" ? wcStart.length : undefined
+                  }
                   onChange={(e) =>
                     setInput(
                       isMathMode(gameMode)
                         ? e.target.value.replace(/[^0-9-]/g, "")
                         : e.target.value
-                          .replace(/[^a-zA-Z]/g, "")
-                          .toLowerCase(),
+                            .replace(/[^a-zA-Z]/g, "")
+                            .toLowerCase(),
                     )
                   }
                   ref={wordInputRef}

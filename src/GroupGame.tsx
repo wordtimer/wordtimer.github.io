@@ -125,7 +125,11 @@ export type GroupMode =
   | "sixrush"
   | "alphabet"
   | "timed"
-  | "survival" | "startEnd" | "math" | "anagram" | "wordChange";
+  | "survival"
+  | "startEnd"
+  | "math"
+  | "anagram"
+  | "wordChange";
 
 // PromptItem.fragment meaning depends on the mode:
 //   word modes: the letters to include ("ing")
@@ -283,7 +287,6 @@ const promptCountFor = (mode: GroupMode) =>
 // the text to show in big letters. startEnd fragments ("b-a") become "B … A";
 // math problems and normal fragments are just uppercased.
 function displayPrompt(fragment: string, mode: GroupMode) {
-
   if (mode === "anagram") return fragment.toUpperCase().split("").join(" ");
 
   if (mode === "wordChange") {
@@ -2236,7 +2239,9 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
   const handleAnagramSubmit = (event: FormEvent) => {
     event.preventDefault();
 
-    const startMs = game?.started_at ? new Date(game.started_at).getTime() : NaN;
+    const startMs = game?.started_at
+      ? new Date(game.started_at).getTime()
+      : NaN;
 
     if (!currentPrompt || !Number.isFinite(startMs) || now() < startMs) return;
 
@@ -2246,7 +2251,12 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     }
 
     const word = input.trim().toLowerCase();
-    const problem = checkAnagram(word, currentPrompt.fragment, isValidWord, used);
+    const problem = checkAnagram(
+      word,
+      currentPrompt.fragment,
+      isValidWord,
+      used,
+    );
 
     if (problem) {
       setMessage(problem);
@@ -2271,7 +2281,8 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
   const handleWordChangeSubmit = (event: FormEvent) => {
     event.preventDefault();
 
-    if (!game?.started_at || now() < new Date(game.started_at).getTime()) return;
+    if (!game?.started_at || now() < new Date(game.started_at).getTime())
+      return;
 
     if (!currentPrompt || iFinished) return;
 
@@ -2582,18 +2593,21 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     ? `make as many words as you can in ${ANAGRAM_SECONDS}s. letters can repeat. use all 7 for +7.`
     : isWordChange
       ? `change one letter at a time to reach the target word. ${
-          game?.finish_mode === "last" ? "everyone must solve" : "first to solve"
+          game?.finish_mode === "last"
+            ? "everyone must solve"
+            : "first to solve"
         } ${WORD_CHANGE_PUZZLES} ladders${game?.finish_mode === "last" ? "" : " wins"}.`
-      : isSurvival ? "one life each. 60 seconds total per player. turns auto-skip after 15 seconds."
-    : isTimed
-      ? `last player standing wins. ${ts?.maxLives ?? timedLives} lives each.`
-      : game?.finish_mode === "last"
-        ? mode === "alphabet"
-          ? "everyone must collect all 26 letters"
-          : `everyone must reach ${TARGET_WORDS} ${unitName}`
-        : mode === "alphabet"
-          ? "first to collect all 26 letters wins"
-          : `first to ${TARGET_WORDS} ${unitName} wins`;
+      : isSurvival
+        ? "one life each. 60 seconds total per player. turns auto-skip after 15 seconds."
+        : isTimed
+          ? `last player standing wins. ${ts?.maxLives ?? timedLives} lives each.`
+          : game?.finish_mode === "last"
+            ? mode === "alphabet"
+              ? "everyone must collect all 26 letters"
+              : `everyone must reach ${TARGET_WORDS} ${unitName}`
+            : mode === "alphabet"
+              ? "first to collect all 26 letters wins"
+              : `first to ${TARGET_WORDS} ${unitName} wins`;
 
   /* ------------------------------------------------------------------------
    * RENDER
@@ -2945,8 +2959,11 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
                               ? option.value === "superEasy"
                                 ? "answers up to 99"
                                 : "harder calculations"
-                              : modeChoice === "wordChange" ? (option.value === "superEasy" ? "4 letters, short ladders" : "5 letters, long ladders") : modeChoice === "startEnd" ? START_END_HINTS[option.value]
-                                : option.hint}
+                              : modeChoice === "wordChange"
+                                ? "4 letters, short ladders"
+                                : modeChoice === "startEnd"
+                                  ? START_END_HINTS[option.value]
+                                  : option.hint}
                           </span>
                         </button>
                       ))}
@@ -3115,7 +3132,23 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
           <div className="prompt">
             <small>YOUR SCORE · {myProgress}</small>
 
-            <strong>{displayPrompt(currentPrompt.fragment, mode)}</strong>
+            {mode === "anagram" ? (
+              <strong>
+                {currentPrompt.fragment
+                  .slice(0, 3)
+                  .toUpperCase()
+                  .split("")
+                  .join(" ")}
+                <br />
+                {currentPrompt.fragment
+                  .slice(3, 7)
+                  .toUpperCase()
+                  .split("")
+                  .join(" ")}
+              </strong>
+            ) : (
+              <strong>{displayPrompt(currentPrompt.fragment, mode)}</strong>
+            )}
 
             <p>
               3+ letter words using only these letters. repeats allowed. longer
@@ -3186,7 +3219,9 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
                   {wcStart.toUpperCase()} → {wcEnd.toUpperCase()}
                 </strong>
 
-                <p>change one letter at a time. every step must be a real word.</p>
+                <p>
+                  change one letter at a time. every step must be a real word.
+                </p>
               </div>
 
               <div className="mp-last">
@@ -3370,14 +3405,17 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
             <h2>👑 {winner.display_name} wins</h2>
 
             <p>
-              {isAnagram ? "most points" : isSurvival ? "last player standing with time left"
-                : isTimed
-                  ? "last player standing"
-                  : game?.finish_mode === "last"
-                    ? "everyone finished"
-                    : mode === "alphabet"
-                      ? "first to collect all 26 letters"
-                      : `first to ${target} ${unitName}`}
+              {isAnagram
+                ? "most points"
+                : isSurvival
+                  ? "last player standing with time left"
+                  : isTimed
+                    ? "last player standing"
+                    : game?.finish_mode === "last"
+                      ? "everyone finished"
+                      : mode === "alphabet"
+                        ? "first to collect all 26 letters"
+                        : `first to ${target} ${unitName}`}
             </p>
           </div>
 
