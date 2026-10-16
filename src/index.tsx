@@ -1,4 +1,4 @@
-  import {
+import {
   Dispatch,
   SetStateAction,
   useEffect,
@@ -72,7 +72,7 @@ async function loadGamesPlayed(
     const value = await callCounter(COUNTER_GET_URL, {});
 
     if (value !== null) setGamesPlayed(value);
-  } catch {}
+  } catch { }
 }
 
 // countGamePlayed(setGamesPlayed, amount = 1): takes the state setter and how
@@ -88,7 +88,7 @@ async function countGamePlayed(
     const value = await callCounter(COUNTER_HIT_URL, { p_amount: amount });
 
     if (value !== null) setGamesPlayed(value);
-  } catch {}
+  } catch { }
 }
 
 type Difficulty = "superEasy" | "hard";
@@ -259,17 +259,17 @@ function pickMathPrompt(
     // anywhere from 0 to 99; hard uses larger numbers and results.
     const useTwoSteps = Math.random() < 0.5;
     if (useTwoSteps && operation !== 3) {
-      const min = difficulty === "superEasy" ? 1 : 12;
-      const max = difficulty === "superEasy" ? 20 : 45;
-      const a = randomInt(min, max);
-      const b = randomInt(min, max);
-      const c = randomInt(min, max);
+      const easy = difficulty === "superEasy";
+      // easy: only the first term can be two digits; the others are 1–9
+      const a = easy ? randomInt(1, 99) : randomInt(12, 45);
+      const b = easy ? randomInt(1, 9) : randomInt(12, 45);
+      const c = easy ? randomInt(1, 9) : randomInt(12, 45);
       const firstOp = randomInt(0, 2);
       const secondOp = randomInt(0, 2);
       const first = applyOperation(a, b, firstOp);
       const second = applyOperation(first.value, c, secondOp);
       answer = second.value;
-      const limit = difficulty === "superEasy" ? 99 : 500;
+      const limit = easy ? 99 : 500;
       if (
         answer < 0 ||
         answer > limit ||
@@ -277,21 +277,27 @@ function pickMathPrompt(
         first.value > limit
       )
         continue;
+      // easy multiplication must stay within 9 × 9
+      if (
+        easy &&
+        ((firstOp === 2 && a > 9) || (secondOp === 2 && first.value > 9))
+      )
+        continue;
       expression = `(${a} ${first.symbol} ${b}) ${second.symbol} ${c}`;
     } else if (difficulty === "superEasy") {
       if (operation === 0) {
-        const a = randomInt(10, 89);
-        const b = randomInt(1, 99 - a);
+        const b = randomInt(1, 9);
+        const a = randomInt(1, 99 - b);
         answer = a + b;
         expression = `${a} + ${b}`;
       } else if (operation === 1) {
         const a = randomInt(10, 99);
-        const b = randomInt(1, a - 1);
+        const b = randomInt(1, Math.min(9, a - 1));
         answer = a - b;
         expression = `${a} − ${b}`;
       } else if (operation === 2) {
-        const a = randomInt(2, 12);
-        const b = randomInt(2, Math.min(12, Math.floor(99 / a)));
+        const a = randomInt(1, 9);
+        const b = randomInt(1, 9);
         answer = a * b;
         expression = `${a} × ${b}`;
       } else {
@@ -300,6 +306,7 @@ function pickMathPrompt(
         answer = a ** b;
         if (answer > 99) continue;
         expression = `${a}^${b}`;
+
       }
     } else if (operation === 0) {
       const a = randomInt(25, 199);
@@ -1033,7 +1040,25 @@ export default function App() {
   const focusWordInput = () => {
     window.setTimeout(() => wordInputRef.current?.focus(), 0);
   };
+  // Saves a qualifying run as "anonymous" when the player closes the name modal
+  // (or starts a new game) without submitting a name.
+  const saveAnonymously = (run: NonNullable<typeof pendingRun>) =>
+    submitScore(
+      run.runId,
+      run.mode,
+      run.difficulty,
+      run.roundTime,
+      run.score,
+      "anonymous",
+      "#676767",
+    )
+      .then(() => setBoardRefresh((n) => n + 1))
+      .catch((error) => console.error("ANON SAVE ERROR:", error));
 
+  const handleLeaderboardClose = () => {
+    if (pendingRun) void saveAnonymously(pendingRun);
+    setPendingRun(null);
+  };
   // startGame(): takes nothing, returns nothing. Begins a new run with the
   // current settings. Bumps the global counter, creates a new runIdRef UUID for
   // the leaderboard, and clears pendingRun and highlightRanks. Picks the first
@@ -1047,6 +1072,7 @@ export default function App() {
 
     runIdRef.current = crypto.randomUUID();
 
+    if (pendingRun) void saveAnonymously(pendingRun);
     setPendingRun(null);
     setHighlightRanks({ alltime: null, daily: null });
 
@@ -1249,10 +1275,10 @@ export default function App() {
 
     const finalScore =
       gameMode === "rush" ||
-      gameMode === "alphabet" ||
-      gameMode === "sevenRush" ||
-      gameMode === "startEnd" ||
-      isMathMode(gameMode)
+        gameMode === "alphabet" ||
+        gameMode === "sevenRush" ||
+        gameMode === "startEnd" ||
+        isMathMode(gameMode)
         ? Math.round((rushTotalTime ?? 0) * 1000)
         : score;
 
@@ -1696,12 +1722,10 @@ export default function App() {
 
             {/* Explains when the daily leaderboard resets */}
             <div className="rules-section">
-              <strong>daily leaderboard</strong>
+              {/* rules modal */}
+              <strong>3-day leaderboard</strong>
+              <p>scores stay on the 3-day leaderboard for 3 days. all-time scores are kept.</p>
 
-              <p>
-                daily scores reset every day at 11pm central. all-time scores
-                are kept.
-              </p>
             </div>
           </div>
         </div>
@@ -1800,8 +1824,9 @@ export default function App() {
                 }
                 onClick={() => setBoardPeriod("daily")}
               >
-                <strong>daily</strong>
-                <span>resets every day at 11pm</span>
+                {/* leaderboard modal tab */}
+                <strong>3-day</strong>
+                <span>scores last 3 days</span>
               </button>
             </div>
 
@@ -1909,11 +1934,11 @@ export default function App() {
             <div className="results-header">
               <small>
                 {gameMode === "zen" ||
-                gameMode === "rush" ||
-                gameMode === "alphabet" ||
-                gameMode === "sevenRush" ||
-                gameMode === "startEnd" ||
-                isMathMode(gameMode)
+                  gameMode === "rush" ||
+                  gameMode === "alphabet" ||
+                  gameMode === "sevenRush" ||
+                  gameMode === "startEnd" ||
+                  isMathMode(gameMode)
                   ? "run complete"
                   : "game over"}
               </small>
@@ -2179,12 +2204,12 @@ export default function App() {
                       isMathMode(gameMode)
                         ? e.target.value.replace(/[^0-9-]/g, "")
                         : e.target.value
-                            .replace(/[^a-zA-Z]/g, "")
-                            .toLowerCase(),
+                          .replace(/[^a-zA-Z]/g, "")
+                          .toLowerCase(),
                     )
                   }
                   ref={wordInputRef}
-                  inputMode="text"
+                  inputMode={isMathMode(gameMode) ? "numeric" : "text"}
                   autoFocus
                   autoComplete="off"
                   placeholder={
@@ -2265,7 +2290,7 @@ export default function App() {
           qualifiesAllTime={pendingRun.allTime}
           qualifiesDaily={pendingRun.daily}
           onSubmit={handleLeaderboardSubmit}
-          onClose={() => setPendingRun(null)}
+          onClose={handleLeaderboardClose}
         />
       )}
     </main>
