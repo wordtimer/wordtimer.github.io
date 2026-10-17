@@ -76,7 +76,7 @@ async function loadGamesPlayed(
     const value = await callCounter(COUNTER_GET_URL, {});
 
     if (value !== null) setGamesPlayed(value);
-  } catch {}
+  } catch { }
 }
 
 // countGamePlayed(setGamesPlayed, amount = 1): takes the state setter and how
@@ -92,7 +92,7 @@ async function countGamePlayed(
     const value = await callCounter(COUNTER_HIT_URL, { p_amount: amount });
 
     if (value !== null) setGamesPlayed(value);
-  } catch {}
+  } catch { }
 }
 
 type Difficulty = "superEasy" | "hard";
@@ -131,22 +131,21 @@ const DIFFICULTY_OPTIONS: { value: Difficulty; label: string; hint: string }[] =
 const MODE_OPTIONS: { value: GameMode; label: string; hint: string }[] = [
   { value: "rush", label: "rush", hint: "10 words, fastest time" },
   { value: "sevenRush", label: "sixrush", hint: "10 words, 6+ letters" },
-  { value: "timed", label: "timed", hint: "beat the clock" },
-  { value: "alphabet", label: "alphabet", hint: "collect 26 letters" },
-  { value: "zen", label: "zen", hint: "no timer or lives, not ranked" },
-  { value: "startEnd", label: "start/end", hint: "10 words, match both ends" },
-  { value: "math", label: "math", hint: "10 arithmetic questions" },
-  { value: "daily", label: "daily", hint: "5 words, once a day" },
   {
     value: "anagram",
     label: "anagram",
     hint: `${ANAGRAM_SECONDS}s, words from 7 letters`,
   },
+  { value: "alphabet", label: "alphabet", hint: "collect 26 letters" },
+  { value: "zen", label: "zen", hint: "no timer or lives, not ranked" },
+  { value: "startEnd", label: "start/end", hint: "10 words, match both ends" },
+  { value: "math", label: "math", hint: "10 arithmetic questions" },
   {
     value: "wordChange",
     label: "word change",
     hint: "1 ladder, 1 letter at a time",
   },
+  { value: "timed", label: "timed", hint: "beat the clock" },
 ];
 
 const TIME_OPTIONS = [5, 10, 20, 60];
@@ -1928,15 +1927,29 @@ export default function App() {
           </button>
         ))}
       </div>
-
+      {/* Daily button: full-width, same size as multiplayer */}
+      <button
+        type="button"
+        className={
+          gameMode === "daily"
+            ? "option group-mode-button1 selected"
+            : "option group-mode-button1"
+        }
+        style={{ minHeight: "calc(1* var(--option-height, 64px))" }}
+        onClick={() => setGameMode("daily")}
+      >
+        <strong>daily</strong>
+        <span>5 words, once a day</span>
+      </button>
       {/* Multiplayer button: leaves the solo screen and opens the group game */}
       <button
         type="button"
         className="option group-mode-button"
+        style={{ minHeight: "calc(1 * var(--option-height, 64px))" }}
         onClick={() => setScreen("group")}
       >
-        <strong>multiplayer</strong>
-        <span>race friends to 20 words</span>
+        <strong style={{ fontSize: 20 }}>BETA MULTIPLAYER!!!! UP TO 16 PEOPLE!!!</strong>
+
       </button>
     </div>
   );
@@ -2443,13 +2456,13 @@ export default function App() {
             <div className="results-header">
               <small>
                 {gameMode === "zen" ||
-                gameMode === "daily" ||
-                gameMode === "rush" ||
-                gameMode === "alphabet" ||
-                gameMode === "sevenRush" ||
-                gameMode === "startEnd" ||
-                gameMode === "wordChange" ||
-                isMathMode(gameMode)
+                  gameMode === "daily" ||
+                  gameMode === "rush" ||
+                  gameMode === "alphabet" ||
+                  gameMode === "sevenRush" ||
+                  gameMode === "startEnd" ||
+                  gameMode === "wordChange" ||
+                  isMathMode(gameMode)
                   ? "run complete"
                   : "game over"}
               </small>
@@ -2801,8 +2814,8 @@ export default function App() {
                       isMathMode(gameMode)
                         ? e.target.value.replace(/[^0-9-]/g, "")
                         : e.target.value
-                            .replace(/[^a-zA-Z]/g, "")
-                            .toLowerCase(),
+                          .replace(/[^a-zA-Z]/g, "")
+                          .toLowerCase(),
                     )
                   }
                   ref={wordInputRef}

@@ -84,7 +84,7 @@ header b {
   margin: 4px 0 18px;
 }
 
-.rules-modal > p {
+.rules-modal>p {
   line-height: 1.5;
   color: #bbb;
 }
@@ -297,7 +297,7 @@ label {
   font-size: 18px;
 }
 
-.section-heading > strong {
+.section-heading>strong {
   color: #aaa;
   font-size: 13px;
 }
@@ -383,7 +383,7 @@ label {
   border-top: 1px solid #3a3a3a;
 }
 
-.missed > small {
+.missed>small {
   display: block;
   margin-bottom: 5px;
 }
@@ -433,7 +433,7 @@ label {
   margin-bottom: 20px;
 }
 
-.setting > small {
+.setting>small {
   display: block;
   margin-bottom: 7px;
 }
@@ -572,7 +572,7 @@ label {
   border-bottom: 1px solid #303030;
 }
 
-.instruction > strong {
+.instruction>strong {
   display: flex;
   justify-content: center;
   align-items: center;
@@ -785,6 +785,7 @@ label {
 .lb-skip:hover {
   color: #eee;
 }
+
 .top {
   position: relative;
   justify-content: center;
@@ -890,6 +891,7 @@ label {
     gap: 4px;
   }
 }
+
 .percentile-box {
   display: flex;
   flex-direction: column;
@@ -1070,6 +1072,7 @@ label {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
 /* paste into your main stylesheet */
 
 .mp-top {
@@ -1141,7 +1144,7 @@ label {
   overflow: hidden;
 }
 
-.mp-bar > i {
+.mp-bar>i {
   display: block;
   height: 100%;
   background: #4f8cff;
@@ -1153,7 +1156,27 @@ label {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+
 /* Multiplayer mode button */
+.group-mode-button1 {
+  width: 100%;
+  min-height: 55px;
+  text-align: center;
+  margin-top: 10px;
+}
+
+.group-mode-button1 strong {
+  color: #999;
+  font-size: 13px;
+}
+
+.group-mode-button1:hover strong {
+  color: #eee;
+}
+
+.group-mode-button1 span {
+  margin-top: 4px;
+}
 
 .group-mode-button {
   width: 100%;
@@ -1163,7 +1186,12 @@ label {
 }
 
 .group-mode-button strong {
+  color: #35b8a6;
   font-size: 13px;
+}
+
+.group-mode-button:hover strong {
+  color: #43cbb8;
 }
 
 .group-mode-button span {
@@ -1197,6 +1225,7 @@ label {
     font-size: 12px;
   }
 }
+
 /* ===== Multiplayer spacing fix: paste at END of stylesheet ===== */
 
 /* One spacing system: the container's gap. Children add no margins of their own. */
@@ -1253,14 +1282,17 @@ label {
 }
 
 .mp-results .results-header h2 {
-  font-size: clamp(26px, 8vw, 40px); /* 50px overflowed on long names */
+  font-size: clamp(26px, 8vw, 40px);
+  /* 50px overflowed on long names */
   overflow-wrap: anywhere;
 }
 
 .mp-code {
   font-size: 2.4rem;
-  letter-spacing: 0.15em; /* was 0em */
-  padding-left: 0.15em; /* re-centers the trailing letter-space */
+  letter-spacing: 0.15em;
+  /* was 0em */
+  padding-left: 0.15em;
+  /* re-centers the trailing letter-space */
   text-align: center;
 }
 
@@ -1277,7 +1309,8 @@ label {
 
 .mp-screen .prompt strong {
   margin: 6px 0;
-  padding-left: 5px; /* offsets the trailing letter-spacing so it centers */
+  padding-left: 5px;
+  /* offsets the trailing letter-spacing so it centers */
 }
 
 .mp-screen .prompt p {
@@ -1307,12 +1340,13 @@ label {
   margin: 0;
 }
 
-.mp-screen > .mp-stats {
+.mp-screen>.mp-stats {
   margin-bottom: 10px;
 }
 
 .mp-stats strong {
-  margin-left: 0; /* JSX already puts a space before <strong> */
+  margin-left: 0;
+  /* JSX already puts a space before <strong> */
 }
 
 /* Scoreboard rows */
@@ -1340,13 +1374,15 @@ label {
   min-width: 40px;
 }
 
-.mp-bar > i {
-  background: #35b8a6; /* match the rest of the theme (was blue) */
+.mp-bar>i {
+  background: #35b8a6;
+  /* match the rest of the theme (was blue) */
 }
 
 .mp-count {
   flex: 0 0 auto;
-  min-width: 64px; /* 48px clipped "♥♥♥♥♥" and "58.3s" */
+  min-width: 64px;
+  /* 48px clipped "♥♥♥♥♥" and "58.3s" */
   white-space: nowrap;
   text-align: right;
 }
@@ -1384,6 +1420,7 @@ label {
     padding-left: 3px;
   }
 }
+
 /* =========================================================
    MULTIPLAYER HOST SETTINGS
    ========================================================= */
@@ -1393,7 +1430,7 @@ label {
   margin: 0;
 }
 
-.mp-lobby .setting > small {
+.mp-lobby .setting>small {
   display: block;
   margin-bottom: 7px;
 }
@@ -1433,12 +1470,12 @@ label {
 }
 
 /* Survival rules box */
-.mp-lobby .setting > .option.selected {
+.mp-lobby .setting>.option.selected {
   width: 100%;
 }
 
 /* Keep the start button separated from the settings */
-.mp-lobby > .play-again {
+.mp-lobby>.play-again {
   margin-top: 2px;
 }
 
@@ -1501,6 +1538,7 @@ label {
     padding: 5px 0;
   }
 }
+
 /* =========================================================
    SURVIVAL RACE
    ========================================================= */
