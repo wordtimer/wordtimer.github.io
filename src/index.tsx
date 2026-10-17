@@ -1954,7 +1954,7 @@ export default function App() {
     </div>
   );
 
-  // renderTimedLives(): takes nothing, returns JSX. Draws the lives picker (1 to
+  //  renderTimedLives(): takes nothing, returns JSX. Draws the lives picker (1 to
   // 5) for timed mode. Clicking a number sets timedLives and also switches the
   // mode to timed, since the setting only matters there. Highlighted when timed
   // mode is active and that number is chosen.
