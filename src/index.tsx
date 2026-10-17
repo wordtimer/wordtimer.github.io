@@ -2052,7 +2052,7 @@ export default function App() {
 
   // SOLO SCREEN: everything below is the normal single-player UI.
   return (
-    <main>
+    <main className={started && !gameOver ? "playing" : undefined}>
       {/* HEADER BAR: the title on the left, live stats on the right */}
       <header>
         {/* Title "WORDTIMER BETA". Clicking it resets everything and returns to
@@ -2791,6 +2791,7 @@ export default function App() {
                   inputMode={isMathMode(gameMode) ? "numeric" : "text"}
                   autoFocus
                   autoComplete="off"
+                  autoCorrect="off"
                   placeholder={
                     isMathMode(gameMode)
                       ? "type your answer..."
