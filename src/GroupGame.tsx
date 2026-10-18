@@ -33,7 +33,7 @@ const TIMED_SHORT_TIME_DEFAULT = 5;
 const TIMED_SHORT_AFTER_WORDS_PER_PLAYER = 20;
 const PROMPT_POOL_SIZE = 60; // fragments generated for alphabet / timed (they wrap)
 const MIN_PLAYERS = 2;
-const MAX_PLAYERS = 16;
+const MAX_PLAYERS = 32;
 const MAX_NAME_LENGTH = 15;
 const POLL_MS = 1000;
 const TIMED_POLL_MS = 500; // poll faster during timed so the potato moves quickly
@@ -244,8 +244,8 @@ const MODE_OPTIONS: { value: GroupMode; label: string; hint: string }[] = [
 // Difficulty hints for startEnd (the fragment pools are sized differently from
 // the normal word modes).
 const START_END_HINTS: Record<GroupDifficulty, string> = {
-  superEasy: "50–500 matching words",
-  hard: "500+ matching words",
+  superEasy: "800+ matching words",
+  hard: "80-800 matching words",
 };
 
 /* ==========================================================================
@@ -1046,7 +1046,17 @@ function makeRoomCode() {
     .map((v) => chars[v % chars.length])
     .join("");
 }
+const GAME_COLUMNS_LEAN =
+  "room_code,status,host_id,game_number,finish_mode,started_at,game_mode,turn_number,turn_state";
 
+// Same as fetchGame, but without `prompts` (they never change within a game).
+async function fetchGameLean(room: string) {
+  const rows = await request<Omit<Game, "prompts">[]>(
+    `${GAMES_URL}?room_code=eq.${enc(room)}&select=${GAME_COLUMNS_LEAN}&limit=1`,
+  );
+
+  return rows[0] ?? null;
+}
 // fetchGame(room): takes a room code, returns a Promise of the Game row or
 // null if no such room exists. Selects only the columns the app uses.
 async function fetchGame(room: string) {
@@ -1335,14 +1345,22 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     if (!room) return;
 
     let cancelled = false;
+    let tickCount = 0;
+    let promptsCache: { game: number; prompts: Game["prompts"] } | null = null;
+    let lastPlayers: Player[] = [];
 
     const tick = async () => {
       try {
-        const [g, p] = await Promise.all([fetchGame(room), fetchPlayers(room)]);
+        // Timed/survival: players only matter for "who is still here", so
+        // refresh them every 4th tick. Other modes show live progress: every tick.
+        const refreshPlayers = !isTimed || tickCount % 4 === 0;
+        tickCount++;
+
+        const lean = await fetchGameLean(room);
 
         if (cancelled) return;
 
-        if (!g) {
+        if (!lean) {
           setRoom(null);
           setGame(null);
           setPlayers([]);
@@ -1350,7 +1368,24 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
           return;
         }
 
-        // Ignore a stale poll that started before one of our own turn writes.
+        // Fetch the full row (with prompts) only when a new game starts.
+        if (!promptsCache || promptsCache.game !== lean.game_number) {
+          const full = await fetchGame(room);
+
+          if (cancelled) return;
+
+          promptsCache = full
+            ? { game: full.game_number, prompts: full.prompts }
+            : null;
+        }
+
+        const g = { ...lean, prompts: promptsCache?.prompts } as Game;
+
+        if (refreshPlayers) lastPlayers = await fetchPlayers(room);
+
+        if (cancelled) return;
+
+        // Same stale-poll guard as before.
         setGame((cur) =>
           cur &&
             cur.status === "playing" &&
@@ -1360,14 +1395,12 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
             ? cur
             : g,
         );
-        setPlayers(p);
+        setPlayers(lastPlayers);
         setSyncError("");
       } catch (e) {
         console.error("GROUP POLL ERROR:", e);
 
-        if (!cancelled) {
-          setSyncError("connection problem, retrying...");
-        }
+        if (!cancelled) setSyncError("connection problem, retrying...");
       }
     };
 
@@ -1379,8 +1412,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [room, pollMs]);
-
+  }, [room, pollMs, isTimed]);
   // Effect 4, leave on page close. Re-runs when `room` or `me` changes; does
   // nothing if you are not in a room. Adds a pagehide listener that sends a
   // DELETE for your player row with keepalive: true, so the browser finishes

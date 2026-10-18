@@ -129,23 +129,23 @@ const DIFFICULTY_OPTIONS: { value: Difficulty; label: string; hint: string }[] =
   ];
 
 const MODE_OPTIONS: { value: GameMode; label: string; hint: string }[] = [
-  { value: "rush", label: "rush", hint: "10 words, fastest time" },
+  { value: "rush", label: "rush ★", hint: "10 words, fastest time" },
   { value: "sevenRush", label: "sixrush", hint: "10 words, 6+ letters" },
   {
     value: "anagram",
-    label: "anagram",
+    label: "anagram ★",
     hint: `${ANAGRAM_SECONDS}s, words from 7 letters`,
   },
   { value: "alphabet", label: "alphabet", hint: "collect 26 letters" },
   { value: "zen", label: "zen", hint: "no timer or lives, not ranked" },
-  { value: "startEnd", label: "start/end", hint: "10 words, match both ends" },
+  { value: "timed", label: "timed", hint: "beat the clock" },
   { value: "math", label: "math", hint: "10 arithmetic questions" },
   {
     value: "wordChange",
     label: "word change",
     hint: "1 ladder, 1 letter at a time",
   },
-  { value: "timed", label: "timed", hint: "beat the clock" },
+  { value: "startEnd", label: "start/end", hint: "10 words, match both ends" },
 ];
 
 const TIME_OPTIONS = [5, 10, 20, 60];
@@ -1904,7 +1904,7 @@ export default function App() {
     // timed, alphabet, zen, start/end, math, daily, anagram, word change), then
     // a full-width multiplayer button.
     <div className="setting">
-      <small>mode</small>
+      <small>mode {"(starred modes are fan favorites!)"}</small>
 
       {/* Three-column grid keeps the expanded mode list readable. */}
       <div
@@ -1938,7 +1938,7 @@ export default function App() {
         style={{ minHeight: "calc(1* var(--option-height, 64px))" }}
         onClick={() => setGameMode("daily")}
       >
-        <strong>daily</strong>
+        <strong>daily ★</strong>
         <span>5 words, once a day</span>
       </button>
       {/* Multiplayer button: leaves the solo screen and opens the group game */}
@@ -1948,7 +1948,7 @@ export default function App() {
         style={{ minHeight: "calc(1 * var(--option-height, 64px))" }}
         onClick={() => setScreen("group")}
       >
-        <strong style={{ fontSize: 20 }}>BETA MULTIPLAYER!!!! UP TO 16 PEOPLE!!!</strong>
+        <strong style={{ fontSize: 20 }}>BETA MULTIPLAYER!!!! UP TO 16 PEOPLE!!! ★</strong>
 
       </button>
     </div>
