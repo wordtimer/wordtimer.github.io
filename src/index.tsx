@@ -79,7 +79,7 @@ async function loadGamesPlayed(
     const value = await callCounter(COUNTER_GET_URL, {});
 
     if (value !== null) setGamesPlayed(value);
-  } catch {}
+  } catch { }
 }
 
 // countGamePlayed(setGamesPlayed, amount = 1): takes the state setter and how
@@ -95,7 +95,7 @@ async function countGamePlayed(
     const value = await callCounter(COUNTER_HIT_URL, { p_amount: amount });
 
     if (value !== null) setGamesPlayed(value);
-  } catch {}
+  } catch { }
 }
 
 type Difficulty = "superEasy" | "hard";
@@ -115,20 +115,20 @@ type GameMode =
 // Minimum number of dictionary words that must contain a fragment.
 const DIFFICULTY_LIMITS: Record<Difficulty, number> = {
   superEasy: 5000,
-  hard: 500,
+  hard: 1000,
 };
 
 // Maximum number of words that may contain a fragment. Easy has no cap; hard
 // caps at 2500 so very common fragments are excluded.
 const DIFFICULTY_MAX: Record<Difficulty, number> = {
   superEasy: Infinity,
-  hard: 2500,
+  hard: 5000,
 };
 
 const DIFFICULTY_OPTIONS: { value: Difficulty; label: string; hint: string }[] =
   [
     { value: "superEasy", label: "easy", hint: "5,000+ words" },
-    { value: "hard", label: "hard", hint: "500–2,500 words" },
+    { value: "hard", label: "hard", hint: "1,000-5,000 words" },
   ];
 
 const MODE_OPTIONS: { value: GameMode; label: string; hint: string }[] = [
@@ -1509,7 +1509,7 @@ export default function App() {
   // roundStartedAt, focuses the input, and for rush-style modes and anagram
   // saves rushStartTime so the matching clock effect runs.
   const startGame = async () => {
-    if (started && !gameOver) return;
+
 
     if (gameMode === "daily") {
       const existing = readDaily();
@@ -1545,6 +1545,8 @@ export default function App() {
 
     runIdRef.current = serverRunId;
 
+    // the server counted this game in start_run; just refresh the display
+    void loadGamesPlayed(setGamesPlayed);
     if (pendingRun) void saveAnonymously(pendingRun);
     setPendingRun(null);
     setHighlightRanks({ alltime: null, daily: null });
@@ -2469,13 +2471,13 @@ export default function App() {
             <div className="results-header">
               <small>
                 {gameMode === "zen" ||
-                gameMode === "daily" ||
-                gameMode === "rush" ||
-                gameMode === "alphabet" ||
-                gameMode === "sevenRush" ||
-                gameMode === "startEnd" ||
-                gameMode === "wordChange" ||
-                isMathMode(gameMode)
+                  gameMode === "daily" ||
+                  gameMode === "rush" ||
+                  gameMode === "alphabet" ||
+                  gameMode === "sevenRush" ||
+                  gameMode === "startEnd" ||
+                  gameMode === "wordChange" ||
+                  isMathMode(gameMode)
                   ? "run complete"
                   : "game over"}
               </small>
@@ -2827,8 +2829,8 @@ export default function App() {
                       isMathMode(gameMode)
                         ? e.target.value.replace(/[^0-9-]/g, "")
                         : e.target.value
-                            .replace(/[^a-zA-Z]/g, "")
-                            .toLowerCase(),
+                          .replace(/[^a-zA-Z]/g, "")
+                          .toLowerCase(),
                     )
                   }
                   ref={wordInputRef}
