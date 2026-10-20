@@ -2968,7 +2968,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
                           {
                             value: "hard",
                             label: "hard",
-                            hint: "500–2,500 words",
+                            hint: "1,000-5,000 words",
                           },
                         ] as const
                       ).map((option) => (
