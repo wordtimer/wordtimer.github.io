@@ -124,10 +124,18 @@ export async function startRun(
 // finishRun(runId, score): tells the server the game ended. The server checks
 // the score against its own clock and locks it in. submitScore later uses the
 // locked-in score, so the client can't change it after this point.
-export async function finishRun(runId: string, score: number) {
+// finishRun(runId, score, splits): tells the server the game ended. The server
+// checks the score and the splits (ms between answers) against its own clock and
+// locks them in. submitScore later copies them into the entries row.
+export async function finishRun(
+  runId: string,
+  score: number,
+  splits: number[],
+) {
   return rpc<boolean>("finish_run", {
     p_run_id: runId,
     p_score: score,
+    p_splits: splits,
   });
 }
 

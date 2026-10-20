@@ -1697,7 +1697,10 @@ export default function App() {
 
     const roundTimeArg = gameMode === "timed" ? roundTime : null;
 
-    finishRun(runId, finalScore)
+    // time between correct answers in ms (the first includes start -> first answer)
+    const splits = answerTimes.map((t) => Math.round(t * 1000));
+
+    finishRun(runId, finalScore, splits)
       .then(async () => {
         const [allTime, daily] = await Promise.all([
           wouldQualify(
