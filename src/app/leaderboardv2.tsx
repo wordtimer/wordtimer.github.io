@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 const SUPABASE_URL = "https://frnjbjhigceptzwtmyax.supabase.co";
 const SUPABASE_KEY = "sb_publishable_mB2ZU7RWDpQdPA-mIh8tKw_oxs1_2_B";
 const MAX_NAME_LENGTH = 15;
+const DEVICE_KEY = "wordtimer_device";
 
 export type RankedMode =
   | "timed"
@@ -65,10 +66,7 @@ export function isRankedMode(mode: string): mode is RankedMode {
 const noDifficulty = (mode: RankedMode) =>
   mode === "daily" || mode === "anagram" || mode === "wordChange";
 
-async function rpc<T>(
-  fn: string,
-  args: Record<string, unknown>,
-): Promise<T> {
+async function rpc<T>(fn: string, args: Record<string, unknown>): Promise<T> {
   const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
     method: "POST",
     headers: {
@@ -85,6 +83,52 @@ async function rpc<T>(
   }
 
   return response.json() as Promise<T>;
+}
+
+// getDeviceId(): returns a random id kept in localStorage. The server uses it
+// (with IP limits) to enforce one daily-mode run per device per day. It is not
+// a security boundary on its own, just one layer of friction.
+export function getDeviceId(): string {
+  try {
+    let id = localStorage.getItem(DEVICE_KEY);
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem(DEVICE_KEY, id);
+    }
+    return id;
+  } catch {
+    return crypto.randomUUID();
+  }
+}
+
+// startRun(...): asks the server to start the clock for a new game. The server
+// creates the run id, counts the game in the public counter, and returns the id.
+// Pass "unranked" for modes with no leaderboard (zen).
+export async function startRun(
+  mode: RankedMode | "unranked",
+  difficulty: string,
+  roundTime: number | null,
+  deviceId: string,
+) {
+  const diff =
+    mode === "unranked" || noDifficulty(mode) ? "superEasy" : difficulty;
+
+  return rpc<string>("start_run", {
+    p_mode: mode,
+    p_difficulty: diff,
+    p_round_time: mode === "timed" ? roundTime : null,
+    p_device: deviceId,
+  });
+}
+
+// finishRun(runId, score): tells the server the game ended. The server checks
+// the score against its own clock and locks it in. submitScore later uses the
+// locked-in score, so the client can't change it after this point.
+export async function finishRun(runId: string, score: number) {
+  return rpc<boolean>("finish_run", {
+    p_run_id: runId,
+    p_score: score,
+  });
 }
 
 export async function wouldQualify(
@@ -157,30 +201,18 @@ export async function fetchLeaderboard(
   }));
 }
 
-export async function submitScore(
-  runId: string,
-  mode: RankedMode,
-  difficulty: string,
-  roundTime: number | null,
-  score: number,
-  name: string,
-  color: string,
-) {
+// submitScore(runId, name, color): saves a finished run to the leaderboard. The
+// score, mode and difficulty all come from the server's own record of the run;
+// the client only supplies a name and a colour.
+export async function submitScore(runId: string, name: string, color: string) {
   return rpc<number>("submit_score", {
     p_run_id: runId,
-    p_mode: mode,
-    p_difficulty: noDifficulty(mode) ? "superEasy" : difficulty,
-    p_round_time: mode === "timed" ? roundTime : null,
-    p_score: score,
     p_name: name.trim().slice(0, MAX_NAME_LENGTH),
     p_color: color,
   });
 }
 
-export async function getRunRank(
-  runId: string,
-  period: Period = "alltime",
-) {
+export async function getRunRank(runId: string, period: Period = "alltime") {
   return rpc<number>("get_run_rank", {
     p_run_id: runId,
     p_period: period,
@@ -265,9 +297,7 @@ export function Leaderboard({
     <div className="leaderboard">
       <div className="section-heading">
         <div>
-          <small>
-            {period === "daily" ? "3-day" : "all-time"}
-          </small>
+          <small>{period === "daily" ? "3-day" : "all-time"}</small>
           <h2>{formatModeTitle(mode, difficulty)}</h2>
         </div>
       </div>

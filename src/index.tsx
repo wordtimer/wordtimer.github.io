@@ -11,9 +11,12 @@ import {
   Leaderboard,
   LeaderboardSubmitModal,
   Period,
+  finishRun,
+  getDeviceId,
   getRunRank,
   getScorePercentile,
   isRankedMode,
+  startRun,
   submitScore,
   wouldQualify,
   type RankedMode,
@@ -76,7 +79,7 @@ async function loadGamesPlayed(
     const value = await callCounter(COUNTER_GET_URL, {});
 
     if (value !== null) setGamesPlayed(value);
-  } catch { }
+  } catch {}
 }
 
 // countGamePlayed(setGamesPlayed, amount = 1): takes the state setter and how
@@ -92,7 +95,7 @@ async function countGamePlayed(
     const value = await callCounter(COUNTER_HIT_URL, { p_amount: amount });
 
     if (value !== null) setGamesPlayed(value);
-  } catch { }
+  } catch {}
 }
 
 type Difficulty = "superEasy" | "hard";
@@ -1487,15 +1490,7 @@ export default function App() {
   // Saves a qualifying run as "anonymous" when the player closes the name modal
   // (or starts a new game) without submitting a name.
   const saveAnonymously = (run: NonNullable<typeof pendingRun>) =>
-    submitScore(
-      run.runId,
-      run.mode,
-      run.difficulty,
-      run.roundTime,
-      run.score,
-      "anonymous",
-      "#676767",
-    )
+    submitScore(run.runId, "anonymous", "#676767")
       .then(() => setBoardRefresh((n) => n + 1))
       .catch((error) => console.error("ANON SAVE ERROR:", error));
 
@@ -1513,22 +1508,42 @@ export default function App() {
   // ANAGRAM_SECONDS, sets gameOver false and started true, records
   // roundStartedAt, focuses the input, and for rush-style modes and anagram
   // saves rushStartTime so the matching clock effect runs.
-  const startGame = () => {
+  const startGame = async () => {
+    if (started && !gameOver) return;
+
     if (gameMode === "daily") {
       const existing = readDaily();
       if (existing) {
         setDailyRecord(existing);
         return;
       }
+    }
+
+    const rankedMode = leaderboardModeFor(gameMode, difficulty);
+    let serverRunId: string;
+    try {
+      serverRunId = await startRun(
+        rankedMode ?? "unranked",
+        difficulty,
+        gameMode === "timed" ? roundTime : null,
+        getDeviceId(),
+      );
+    } catch (error) {
+      console.error("RUN START ERROR:", error);
+      setMessage(
+        "couldn't start securely. check your connection and try again.",
+      );
+      return;
+    }
+
+    if (gameMode === "daily") {
       const record: DailyRecord = { date: todayKey(), time: null };
       writeDaily(record); // marked as played the moment it starts
       setDailyRecord(record);
       dailyPromptsRef.current = buildDailyPrompts(todayKey());
     }
 
-    countGamePlayed(setGamesPlayed);
-
-    runIdRef.current = crypto.randomUUID();
+    runIdRef.current = serverRunId;
 
     if (pendingRun) void saveAnonymously(pendingRun);
     setPendingRun(null);
@@ -1617,15 +1632,7 @@ export default function App() {
   const handleLeaderboardSubmit = async (name: string, color: string) => {
     if (!pendingRun) return;
 
-    await submitScore(
-      pendingRun.runId,
-      pendingRun.mode,
-      pendingRun.difficulty,
-      pendingRun.roundTime,
-      pendingRun.score,
-      name,
-      color,
-    );
+    await submitScore(pendingRun.runId, name, color);
 
     const [allTimeRank, dailyRank] = await Promise.all([
       pendingRun.allTime
@@ -1688,11 +1695,24 @@ export default function App() {
 
     const roundTimeArg = gameMode === "timed" ? roundTime : null;
 
-    Promise.all([
-      wouldQualify(rankedMode, difficulty, roundTimeArg, finalScore, "alltime"),
-      wouldQualify(rankedMode, difficulty, roundTimeArg, finalScore, "daily"),
-    ])
-      .then(async ([allTime, daily]) => {
+    finishRun(runId, finalScore)
+      .then(async () => {
+        const [allTime, daily] = await Promise.all([
+          wouldQualify(
+            rankedMode,
+            difficulty,
+            roundTimeArg,
+            finalScore,
+            "alltime",
+          ),
+          wouldQualify(
+            rankedMode,
+            difficulty,
+            roundTimeArg,
+            finalScore,
+            "daily",
+          ),
+        ]);
         if (allTime || daily) {
           setPendingRun({
             runId,
@@ -1707,15 +1727,7 @@ export default function App() {
           return;
         }
 
-        await submitScore(
-          runId,
-          rankedMode,
-          difficulty,
-          roundTimeArg,
-          finalScore,
-          "anonymous",
-          "#676767",
-        );
+        await submitScore(runId, "anonymous", "#676767");
 
         console.log("NON-QUALIFYING SCORE SAVED:", finalScore);
       })
@@ -1948,8 +1960,9 @@ export default function App() {
         style={{ minHeight: "calc(1 * var(--option-height, 64px))" }}
         onClick={() => setScreen("group")}
       >
-        <strong style={{ fontSize: 20 }}>BETA MULTIPLAYER!!!! UP TO 16 PEOPLE!!! ★</strong>
-
+        <strong style={{ fontSize: 20 }}>
+          BETA MULTIPLAYER!!!! UP TO 16 PEOPLE!!! ★
+        </strong>
       </button>
     </div>
   );
@@ -2456,13 +2469,13 @@ export default function App() {
             <div className="results-header">
               <small>
                 {gameMode === "zen" ||
-                  gameMode === "daily" ||
-                  gameMode === "rush" ||
-                  gameMode === "alphabet" ||
-                  gameMode === "sevenRush" ||
-                  gameMode === "startEnd" ||
-                  gameMode === "wordChange" ||
-                  isMathMode(gameMode)
+                gameMode === "daily" ||
+                gameMode === "rush" ||
+                gameMode === "alphabet" ||
+                gameMode === "sevenRush" ||
+                gameMode === "startEnd" ||
+                gameMode === "wordChange" ||
+                isMathMode(gameMode)
                   ? "run complete"
                   : "game over"}
               </small>
@@ -2814,8 +2827,8 @@ export default function App() {
                       isMathMode(gameMode)
                         ? e.target.value.replace(/[^0-9-]/g, "")
                         : e.target.value
-                          .replace(/[^a-zA-Z]/g, "")
-                          .toLowerCase(),
+                            .replace(/[^a-zA-Z]/g, "")
+                            .toLowerCase(),
                     )
                   }
                   ref={wordInputRef}
