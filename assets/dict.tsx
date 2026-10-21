@@ -9,6 +9,8 @@ aahing
 aahs
 aal
 aalii
+glock
+glocks
 aaliis
 aals
 aam
