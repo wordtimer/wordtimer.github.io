@@ -79,7 +79,7 @@ async function loadGamesPlayed(
     const value = await callCounter(COUNTER_GET_URL, {});
 
     if (value !== null) setGamesPlayed(value);
-  } catch {}
+  } catch { }
 }
 
 // countGamePlayed(setGamesPlayed, amount = 1): takes the state setter and how
@@ -95,7 +95,7 @@ async function countGamePlayed(
     const value = await callCounter(COUNTER_HIT_URL, { p_amount: amount });
 
     if (value !== null) setGamesPlayed(value);
-  } catch {}
+  } catch { }
 }
 
 type Difficulty = "superEasy" | "hard";
@@ -277,6 +277,7 @@ function randomInt(min: number, max: number) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
+
 function pickMathPrompt(
   difficulty: Difficulty,
   usedExpressions: Set<string> = new Set(),
@@ -287,51 +288,23 @@ function pickMathPrompt(
     return { value: a * b, symbol: "×" };
   };
 
-  // Use a bounded number of attempts so an unexpectedly exhausted pool cannot
-  // leave the game stuck in an infinite loop.
+  // Use a bounded number of attempts to avoid infinite loops.
   for (let attempt = 0; attempt < 2000; attempt++) {
     let answer = 0;
     let expression = "";
-    const operation = randomInt(0, 3);
+    const operation = randomInt(0, 4);
 
-    // About half of prompts are two-step calculations. Easy answers can be
-    // anywhere from 0 to 99; hard uses larger numbers and results.
-    const useTwoSteps = Math.random() < 0.5;
-    if (useTwoSteps && operation !== 3) {
-      const easy = difficulty === "superEasy";
-      // easy: only the first term can be two digits; the others are 1–9
-      const a = easy ? randomInt(1, 99) : randomInt(12, 45);
-      const b = easy ? randomInt(1, 9) : randomInt(12, 45);
-      const c = easy ? randomInt(1, 9) : randomInt(12, 45);
-      const firstOp = randomInt(0, 2);
-      const secondOp = randomInt(0, 2);
-      const first = applyOperation(a, b, firstOp);
-      const second = applyOperation(first.value, c, secondOp);
-      answer = second.value;
-      const limit = easy ? 99 : 500;
-      if (
-        answer < 0 ||
-        answer > limit ||
-        first.value < 0 ||
-        first.value > limit
-      )
-        continue;
-      // easy multiplication must stay within 9 × 9
-      if (
-        easy &&
-        ((firstOp === 2 && a > 9) || (secondOp === 2 && first.value > 9))
-      )
-        continue;
-      expression = `(${a} ${first.symbol} ${b}) ${second.symbol} ${c}`;
-    } else if (difficulty === "superEasy") {
+    if (difficulty === "superEasy") {
+      // Easy mode only uses two-number equations.
       if (operation === 0) {
         const b = randomInt(1, 9);
         const a = randomInt(1, 99 - b);
         answer = a + b;
         expression = `${a} + ${b}`;
       } else if (operation === 1) {
-        const a = randomInt(10, 99);
-        const b = randomInt(1, Math.min(9, a - 1));
+        // Subtraction: first number <= 20, second number <= 10.
+        const a = randomInt(2, 20);
+        const b = randomInt(1, Math.min(10, a - 1));
         answer = a - b;
         expression = `${a} − ${b}`;
       } else if (operation === 2) {
@@ -346,49 +319,78 @@ function pickMathPrompt(
         if (answer > 99) continue;
         expression = `${a}^${b}`;
       }
-    } else if (operation === 0) {
-      const a = randomInt(25, 199);
-      const b = randomInt(15, 199);
-      answer = a + b;
-      if (answer > 500) continue;
-      expression = `${a} + ${b}`;
-    } else if (operation === 1) {
-      const a = randomInt(30, 250);
-      const b = randomInt(10, a - 1);
-      answer = a - b;
-      expression = `${a} − ${b}`;
-    } else if (operation === 2) {
-      const a = randomInt(12, 25);
-      const b = randomInt(3, 18);
-      answer = a * b;
-      if (answer > 500) continue;
-      expression = `${a} × ${b}`;
     } else {
-      const a = randomInt(3, 15);
-      const b = randomInt(2, 5);
-      answer = a ** b;
-      if (answer > 500) continue;
-      expression = `${a}^${b}`;
+      // Hard mode retains two-number equations and two-step equations.
+      const useTwoSteps = Math.random() < 0.5;
+
+      if (useTwoSteps) {
+        const a = randomInt(12, 45);
+        const b = randomInt(12, 45);
+        const c = randomInt(12, 45);
+        const firstOp = randomInt(0, 3);
+        const secondOp = randomInt(0, 3);
+        const first = applyOperation(a, b, firstOp);
+        const second = applyOperation(first.value, c, secondOp);
+
+        answer = second.value;
+        if (
+          answer < 0 ||
+          answer > 500 ||
+          first.value < 0 ||
+          first.value > 500
+        ) {
+          continue;
+        }
+
+        expression = `(${a} ${first.symbol} ${b}) ${second.symbol} ${c}`;
+      } else if (operation === 0) {
+        const a = randomInt(25, 199);
+        const b = randomInt(15, 199);
+        answer = a + b;
+        if (answer > 500) continue;
+        expression = `${a} + ${b}`;
+      } else if (operation === 1) {
+        const a = randomInt(30, 250);
+        const b = randomInt(10, a - 1);
+        answer = a - b;
+        expression = `${a} − ${b}`;
+      } else if (operation === 2) {
+        const a = randomInt(12, 25);
+        const b = randomInt(3, 18);
+        answer = a * b;
+        if (answer > 500) continue;
+        expression = `${a} × ${b}`;
+      } else {
+        const a = randomInt(3, 15);
+        const b = randomInt(2, 5);
+        answer = a ** b;
+        if (answer > 500) continue;
+        expression = `${a}^${b}`;
+      }
     }
 
     if (usedExpressions.has(expression)) continue;
     return { expression, answer };
   }
 
-  // This fallback is only reached if the used-expression set is nearly full.
-  for (let a = 1; a <= 9; a++) {
-    for (let b = 1; b <= 9; b++) {
-      const expression = `${a} + ${b}`;
-      const answer = a + b;
-      if (
-        answer <= (difficulty === "superEasy" ? 99 : 500) &&
-        !usedExpressions.has(expression)
-      ) {
-        return { expression, answer };
-      }
+  throw new Error("Unable to generate a unique math prompt.");
+}
+
+
+// This fallback is only reached if the used-expression set is nearly full.
+for (let a = 1; a <= 9; a++) {
+  for (let b = 1; b <= 9; b++) {
+    const expression = `${a} + ${b}`;
+    const answer = a + b;
+    if (
+      answer <= (difficulty === "superEasy" ? 99 : 500) &&
+      !usedExpressions.has(expression)
+    ) {
+      return { expression, answer };
     }
   }
-  return { expression: "1 + 1", answer: 2 };
+}
+return { expression: "1 + 1", answer: 2 };
 }
 
 type PromptData = {
@@ -2489,13 +2491,13 @@ export default function App() {
             <div className="results-header">
               <small>
                 {gameMode === "zen" ||
-                gameMode === "daily" ||
-                gameMode === "rush" ||
-                gameMode === "alphabet" ||
-                gameMode === "sevenRush" ||
-                gameMode === "startEnd" ||
-                gameMode === "wordChange" ||
-                isMathMode(gameMode)
+                  gameMode === "daily" ||
+                  gameMode === "rush" ||
+                  gameMode === "alphabet" ||
+                  gameMode === "sevenRush" ||
+                  gameMode === "startEnd" ||
+                  gameMode === "wordChange" ||
+                  isMathMode(gameMode)
                   ? "run complete"
                   : "game over"}
               </small>
@@ -2847,8 +2849,8 @@ export default function App() {
                       isMathMode(gameMode)
                         ? e.target.value.replace(/[^0-9-]/g, "")
                         : e.target.value
-                            .replace(/[^a-zA-Z]/g, "")
-                            .toLowerCase(),
+                          .replace(/[^a-zA-Z]/g, "")
+                          .toLowerCase(),
                     )
                   }
                   ref={wordInputRef}
