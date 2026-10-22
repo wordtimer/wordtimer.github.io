@@ -377,22 +377,6 @@ function pickMathPrompt(
 }
 
 
-// This fallback is only reached if the used-expression set is nearly full.
-for (let a = 1; a <= 9; a++) {
-  for (let b = 1; b <= 9; b++) {
-    const expression = `${a} + ${b}`;
-    const answer = a + b;
-    if (
-      answer <= (difficulty === "superEasy" ? 99 : 500) &&
-      !usedExpressions.has(expression)
-    ) {
-      return { expression, answer };
-    }
-  }
-}
-return { expression: "1 + 1", answer: 2 };
-}
-
 type PromptData = {
   count: number;
   longCount: number;
