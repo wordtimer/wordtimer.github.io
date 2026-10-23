@@ -79,7 +79,7 @@ async function loadGamesPlayed(
     const value = await callCounter(COUNTER_GET_URL, {});
 
     if (value !== null) setGamesPlayed(value);
-  } catch { }
+  } catch {}
 }
 
 // countGamePlayed(setGamesPlayed, amount = 1): takes the state setter and how
@@ -95,7 +95,7 @@ async function countGamePlayed(
     const value = await callCounter(COUNTER_HIT_URL, { p_amount: amount });
 
     if (value !== null) setGamesPlayed(value);
-  } catch { }
+  } catch {}
 }
 
 type Difficulty = "superEasy" | "hard";
@@ -277,7 +277,6 @@ function randomInt(min: number, max: number) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-
 function pickMathPrompt(
   difficulty: Difficulty,
   usedExpressions: Set<string> = new Set(),
@@ -375,7 +374,6 @@ function pickMathPrompt(
 
   throw new Error("Unable to generate a unique math prompt.");
 }
-
 
 type PromptData = {
   count: number;
@@ -2475,13 +2473,13 @@ export default function App() {
             <div className="results-header">
               <small>
                 {gameMode === "zen" ||
-                  gameMode === "daily" ||
-                  gameMode === "rush" ||
-                  gameMode === "alphabet" ||
-                  gameMode === "sevenRush" ||
-                  gameMode === "startEnd" ||
-                  gameMode === "wordChange" ||
-                  isMathMode(gameMode)
+                gameMode === "daily" ||
+                gameMode === "rush" ||
+                gameMode === "alphabet" ||
+                gameMode === "sevenRush" ||
+                gameMode === "startEnd" ||
+                gameMode === "wordChange" ||
+                isMathMode(gameMode)
                   ? "run complete"
                   : "game over"}
               </small>
@@ -2833,21 +2831,23 @@ export default function App() {
                       isMathMode(gameMode)
                         ? e.target.value.replace(/[^0-9-]/g, "")
                         : e.target.value
-                          .replace(/[^a-zA-Z]/g, "")
-                          .toLowerCase(),
+                            .replace(/[^a-zA-Z]/g, "")
+                            .toLowerCase(),
                     )
                   }
                   ref={wordInputRef}
                   inputMode={isMathMode(gameMode) ? "numeric" : "text"}
                   autoFocus
                   autoComplete="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  autoCapitalize="off"
                   placeholder={
                     isMathMode(gameMode)
                       ? "type your answer..."
                       : "type a word..."
                   }
                 />
-
                 <button type="submit">enter</button>
               </div>
 
