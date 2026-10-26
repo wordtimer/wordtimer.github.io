@@ -9,6 +9,7 @@ aahing
 aahs
 aal
 aalii
+pog
 glock
 glocks
 aaliis
