@@ -1,4 +1,4 @@
-import type { Dispatch, FormEvent, SetStateAction } from "react";
+import type { Dispatch, FormEvent, KeyboardEvent, SetStateAction } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 /* ==========================================================================
@@ -122,6 +122,7 @@ export type GroupDifficulty = "superEasy" | "hard";
 // letters of a word; math answers arithmetic questions with whole numbers.
 export type GroupMode =
   | "rush"
+  | "letter"
   | "sixrush"
   | "alphabet"
   | "timed"
@@ -203,6 +204,7 @@ type Props = {
 
 const MODE_OPTIONS: { value: GroupMode; label: string; hint: string }[] = [
   { value: "rush", label: "rush", hint: `${TARGET_WORDS} words, fastest time` },
+  { value: "letter", label: "letter", hint: "type 20 matching letters" },
   {
     value: "sixrush",
     label: "sixrush",
@@ -578,6 +580,8 @@ function checkAnswer(
   isValidWord: (w: string) => boolean,
   used: { has: (w: string) => boolean },
 ): string | null {
+  if (mode === "letter")
+    return word === prompt.fragment ? null : "type the matching letter.";
   if (isMathMode(mode)) return checkMath(word, prompt);
 
   if (mode === "startEnd") {
@@ -610,7 +614,7 @@ const addLetters = (word: string, current: string[]) => {
 // (NOT from whichever client happens to be solving).
 const timedLimitFor = (ts: TurnState) =>
   ts.shorten &&
-    ts.totalWords >= ts.order.length * TIMED_SHORT_AFTER_WORDS_PER_PLAYER
+  ts.totalWords >= ts.order.length * TIMED_SHORT_AFTER_WORDS_PER_PLAYER
     ? TIMED_SHORT_TIME_DEFAULT
     : ts.limit;
 
@@ -1282,7 +1286,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
   // and does not block later saves.
   const queueSave = (fn: () => Promise<unknown>) => {
     saveChain.current = saveChain.current
-      .catch(() => { })
+      .catch(() => {})
       .then(fn)
       .catch((e) => console.error("SAVE ERROR:", e));
   };
@@ -1388,10 +1392,10 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
         // Same stale-poll guard as before.
         setGame((cur) =>
           cur &&
-            cur.status === "playing" &&
-            g.status === "playing" &&
-            g.game_number === cur.game_number &&
-            g.turn_number < cur.turn_number
+          cur.status === "playing" &&
+          g.status === "playing" &&
+          g.game_number === cur.game_number &&
+          g.turn_number < cur.turn_number
             ? cur
             : g,
         );
@@ -1425,7 +1429,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
         method: "DELETE",
         keepalive: true,
         headers: AUTH_HEADERS,
-      }).catch(() => { });
+      }).catch(() => {});
     };
 
     window.addEventListener("pagehide", onHide);
@@ -1664,7 +1668,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     isAnagram &&
     !!game?.started_at &&
     now() - new Date(game?.started_at ?? 0).getTime() >=
-    (ANAGRAM_SECONDS + ANAGRAM_GRACE_S) * 1000;
+      (ANAGRAM_SECONDS + ANAGRAM_GRACE_S) * 1000;
 
   // ---- timed ----
   // timedRanking: survivors first, then eliminated players in reverse order of
@@ -1688,8 +1692,8 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
 
   const timedAliveCount = ts
     ? ts.order.filter((id) =>
-      isSurvival ? (ts.remaining[id] ?? 0) > 0 : (ts.lives[id] ?? 0) > 0,
-    ).length
+        isSurvival ? (ts.remaining[id] ?? 0) > 0 : (ts.lives[id] ?? 0) > 0,
+      ).length
     : 0;
 
   const timedOver = isTimed && !!ts && timedAliveCount <= 1;
@@ -1699,8 +1703,8 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
     () =>
       ts
         ? ts.order
-          .map((id) => playerById.get(id))
-          .filter((p): p is Player => !!p)
+            .map((id) => playerById.get(id))
+            .filter((p): p is Player => !!p)
         : [],
     [ts, playerById],
   );
@@ -2214,6 +2218,33 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
   // first and the finish RPC second, because the server only stamps finished_at
   // if progress already reached the target.
   // SUBMIT AN ANSWER (rush / sixrush / alphabet / startEnd / math)
+  const handleLetterKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (mode !== "letter" || !/^[a-z]$/i.test(event.key)) return;
+    event.preventDefault();
+    if (
+      !game?.started_at ||
+      now() < new Date(game.started_at).getTime() ||
+      !currentPrompt ||
+      iFinished
+    )
+      return;
+    if (event.key.toLowerCase() !== currentPrompt.fragment.toLowerCase())
+      return;
+
+    const nextIndex = index + 1;
+    setIndex(nextIndex);
+    setInput("");
+    setMessage(nextIndex >= target ? "" : "correct!");
+    if (nextIndex >= target) {
+      queueSave(async () => {
+        await saveProgress(target);
+        await saveFinished(target);
+      });
+    } else {
+      queueSave(() => saveProgress(nextIndex));
+    }
+  };
+
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
 
@@ -2589,13 +2620,14 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
               <div className="mp-bar">
                 <i
                   style={{
-                    width: `${isSurvival
-                      ? Math.max(
-                        0,
-                        Math.min(100, (remaining / SURVIVAL_TIME) * 100),
-                      )
-                      : Math.max(0, Math.min(100, (lives / maxLives) * 100))
-                      }%`,
+                    width: `${
+                      isSurvival
+                        ? Math.max(
+                            0,
+                            Math.min(100, (remaining / SURVIVAL_TIME) * 100),
+                          )
+                        : Math.max(0, Math.min(100, (lives / maxLives) * 100))
+                    }%`,
                   }}
                 />
               </div>
@@ -2623,10 +2655,11 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
   const goalText = isAnagram
     ? `make as many words as you can in ${ANAGRAM_SECONDS}s. letters can repeat. use all 7 for +7.`
     : isWordChange
-      ? `change one letter at a time to reach the target word. ${game?.finish_mode === "last"
-        ? "everyone must solve"
-        : "first to solve"
-      } ${WORD_CHANGE_PUZZLES} ladders${game?.finish_mode === "last" ? "" : " wins"}.`
+      ? `change one letter at a time to reach the target word. ${
+          game?.finish_mode === "last"
+            ? "everyone must solve"
+            : "first to solve"
+        } ${WORD_CHANGE_PUZZLES} ladders${game?.finish_mode === "last" ? "" : " wins"}.`
       : isSurvival
         ? "one life each. 60 seconds total per player. turns auto-skip after 15 seconds."
         : isTimed
@@ -3079,7 +3112,7 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
                 <small>
                   {mode === "alphabet"
                     ? `LETTERS ${letters.size} OF ${ALPHABET_TARGET}`
-                    : `${isMath ? "PROBLEM" : "WORD"} ${index + 1} OF ${TARGET_WORDS}`}
+                    : `${mode === "letter" ? "LETTER" : isMath ? "PROBLEM" : "WORD"} ${index + 1} OF ${target}`}
                 </small>
 
                 <strong>
@@ -3089,13 +3122,15 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
                 </strong>
 
                 <p>
-                  {isMath
-                    ? "type the answer. whole numbers only."
-                    : mode === "startEnd"
-                      ? "use a dictionary word (3+ letters) that starts and ends with these letters"
-                      : mode === "sixrush"
-                        ? "put these letters in your word. 6+ letters."
-                        : "put these letters in order anywhere in your word"}
+                  {mode === "letter"
+                    ? "type the matching letter. no enter needed. repeated letters can appear."
+                    : isMath
+                      ? "type the answer. whole numbers only."
+                      : mode === "startEnd"
+                        ? "use a dictionary word (3+ letters) that starts and ends with these letters"
+                        : mode === "sixrush"
+                          ? "put these letters in your word. 6+ letters."
+                          : "put these letters in order anywhere in your word"}
                 </p>
               </div>
 
@@ -3112,15 +3147,21 @@ export default function GroupGame({ onExit, makePrompts, isValidWord }: Props) {
                         e.target.value.replace(inputFilter, "").toLowerCase(),
                       )
                     }
+                    onKeyDown={handleLetterKeyDown}
+                    maxLength={mode === "letter" ? 1 : undefined}
                     inputMode={isMath ? "numeric" : "text"}
                     autoFocus
                     autoComplete="off"
                     placeholder={
-                      isMath ? "type the answer..." : "type a word..."
+                      mode === "letter"
+                        ? "type the matching letter..."
+                        : isMath
+                          ? "type the answer..."
+                          : "type a word..."
                     }
                   />
 
-                  <button type="submit">enter</button>
+                  {mode !== "letter" && <button type="submit">enter</button>}
                 </div>
 
                 <div className="message">{message}</div>

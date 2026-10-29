@@ -104,6 +104,7 @@ type GameMode =
   | "timed"
   | "zen"
   | "rush"
+  | "letter"
   | "alphabet"
   | "sevenRush"
   | "startEnd"
@@ -140,6 +141,7 @@ const MODE_OPTIONS: { value: GameMode; label: string; hint: string }[] = [
     hint: `${ANAGRAM_SECONDS}s, words from 7 letters`,
   },
   { value: "alphabet", label: "alphabet", hint: "collect 26 letters" },
+  { value: "letter", label: "letter", hint: "type 10 matching letters" },
   { value: "zen", label: "zen", hint: "no timer or lives, not ranked" },
   { value: "timed", label: "timed", hint: "beat the clock" },
   { value: "math", label: "math", hint: "10 arithmetic questions" },
@@ -150,6 +152,14 @@ const MODE_OPTIONS: { value: GameMode; label: string; hint: string }[] = [
   },
   { value: "startEnd", label: "start/end", hint: "10 words, match both ends" },
 ];
+
+const MODE_ROWS = [
+  MODE_OPTIONS.slice(0, 3),
+  MODE_OPTIONS.slice(3, 7),
+  MODE_OPTIONS.slice(7, 10),
+];
+const randomLetter = () =>
+  String.fromCharCode(97 + Math.floor(Math.random() * 26));
 
 const TIME_OPTIONS = [5, 10, 20, 60];
 
@@ -191,6 +201,7 @@ function leaderboardModeFor(
 function isRushMode(mode: GameMode) {
   return (
     mode === "rush" ||
+    mode === "letter" ||
     mode === "alphabet" ||
     mode === "sevenRush" ||
     mode === "startEnd" ||
@@ -744,6 +755,13 @@ function makeGroupPrompts(
   difficulty: GroupDifficulty,
   mode?: string,
 ) {
+  if (mode === "letter") {
+    return Array.from({ length: count }, () => ({
+      fragment: randomLetter(),
+      examples: [],
+    }));
+  }
+
   if (mode === "anagram") return [makeAnagramPrompt()];
 
   if (mode === "wordChange") {
@@ -1569,6 +1587,9 @@ export default function App() {
       setPromptExamples(ladder.examples);
     } else if (gameMode === "startEnd") {
       setStartEndPrompt(pickStartEndPrompt(difficulty));
+    } else if (gameMode === "letter") {
+      setPrompt(randomLetter());
+      setPromptExamples([]);
     } else if (isMathMode(gameMode)) {
       setMathPrompt(getNextMathPrompt());
     } else {
@@ -1605,9 +1626,11 @@ export default function App() {
           ? "change one letter at a time."
           : gameMode === "startEnd"
             ? "enter a word matching both ends."
-            : isMathMode(gameMode)
-              ? "solve the equation."
-              : "enter a word containing the letters.",
+            : gameMode === "letter"
+              ? "type the matching letter. no enter needed."
+              : isMathMode(gameMode)
+                ? "solve the equation."
+                : "enter a word containing the letters.",
     );
     setGameOver(false);
     setStarted(true);
@@ -1802,6 +1825,64 @@ export default function App() {
     rushTotalTime,
   ]);
 
+  // Letter mode: accept only the displayed letter, immediately on keydown.
+  // Repeated prompts are allowed; the run ends after 10 correct key presses.
+  useEffect(() => {
+    if (screen !== "solo" || !started || gameOver || gameMode !== "letter")
+      return;
+
+    const handleLetterKey = (event: KeyboardEvent) => {
+      if (
+        showRules ||
+        showLeaderboard ||
+        pendingRun ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.altKey
+      )
+        return;
+      if (!/^[a-z]$/i.test(event.key)) return;
+      event.preventDefault();
+
+      if (event.key.toLowerCase() !== prompt.toLowerCase()) return;
+
+      const now = Date.now();
+      setAnswerTimes((current) => [
+        ...current,
+        (now - roundStartedAt.current) / 1000,
+      ]);
+      setScore((current) => current + 1);
+      const nextCount = rushWords + 1;
+      setRushWords(nextCount);
+
+      if (nextCount >= 10) {
+        setRushTotalTime((now - (rushStartTime ?? now)) / 1000);
+        setMessage("letter mode complete!");
+        setGameOver(true);
+        return;
+      }
+
+      setPrompt(randomLetter());
+      setPromptNonce((n) => n + 1);
+      setMessage("");
+      roundStartedAt.current = now;
+    };
+
+    window.addEventListener("keydown", handleLetterKey);
+    return () => window.removeEventListener("keydown", handleLetterKey);
+  }, [
+    screen,
+    started,
+    gameOver,
+    gameMode,
+    prompt,
+    rushWords,
+    rushStartTime,
+    showRules,
+    showLeaderboard,
+    pendingRun,
+  ]);
+
   // Effect 7, spacebar starts or restarts a game. Re-runs when started,
   // gameOver, showRules, showLeaderboard, pendingRun, screen, gameMode,
   // difficulty, roundTime or timedLives changes (the long list keeps
@@ -1922,25 +2003,62 @@ export default function App() {
     <div className="setting">
       <small>mode {"(starred modes are fan favorites!)"}</small>
 
-      {/* Three-column grid keeps the expanded mode list readable. */}
+      {/* Three rows: 3 modes, 4 modes (Letter included), then 3 modes. */}
       <div
-        className="option-grid mode-options"
+        className="mode-options"
         style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+          display: "flex",
+          flexDirection: "column",
+          gap: "8px",
+          width: "100%",
         }}
       >
-        {MODE_OPTIONS.map((option) => (
-          <button
-            type="button"
-            key={option.value}
-            className={gameMode === option.value ? "option selected" : "option"}
-            onClick={() => setGameMode(option.value)}
+        {MODE_ROWS.map((row, rowIndex) => (
+          <div
+            key={rowIndex}
+            className="option-grid mode-options-row"
+            style={{
+              display: "grid",
+              gridTemplateColumns: `repeat(${row.length}, minmax(0, 1fr))`,
+              gridAutoFlow: "row",
+              alignItems: "start",
+              gap: "8px",
+              width: "100%",
+              flex: "0 0 auto",
+              minWidth: 0,
+            }}
           >
-            {/* Mode name in bold with a short description under it */}
-            <strong>{option.label}</strong>
-            <span>{option.hint}</span>
-          </button>
+            {row.map((option) => (
+              <div
+                key={option.value}
+                className="mode-card"
+                style={{
+                  display: "grid",
+                  gridTemplateRows: "auto auto",
+                  alignContent: "start",
+                  alignSelf: "start",
+                  gap: "4px",
+                  minWidth: 0,
+                }}
+              >
+                <button
+                  type="button"
+                  className={
+                    gameMode === option.value ? "option selected" : "option"
+                  }
+                  style={{
+                    width: "100%",
+                    minWidth: 0,
+                    boxSizing: "border-box",
+                  }}
+                  onClick={() => setGameMode(option.value)}
+                >
+                  <strong>{option.label}</strong>
+                  <span>{option.hint}</span>
+                </button>
+              </div>
+            ))}
+          </div>
         ))}
       </div>
       {/* Daily button: full-width, same size as multiplayer */}
@@ -2475,6 +2593,7 @@ export default function App() {
                 {gameMode === "zen" ||
                 gameMode === "daily" ||
                 gameMode === "rush" ||
+                gameMode === "letter" ||
                 gameMode === "alphabet" ||
                 gameMode === "sevenRush" ||
                 gameMode === "startEnd" ||
@@ -2671,23 +2790,25 @@ export default function App() {
                 <small>
                   {gameMode === "rush"
                     ? "RUSH"
-                    : gameMode === "sevenRush"
-                      ? "SIXRUSH"
-                      : gameMode === "alphabet"
-                        ? "ALPHABET"
-                        : gameMode === "zen"
-                          ? "ZEN MODE"
-                          : gameMode === "startEnd"
-                            ? "START / END"
-                            : gameMode === "daily"
-                              ? "DAILY"
-                              : gameMode === "anagram"
-                                ? "ANAGRAM"
-                                : gameMode === "wordChange"
-                                  ? "WORD CHANGE"
-                                  : isMathMode(gameMode)
-                                    ? "MATH"
-                                    : "TIME LEFT"}
+                    : gameMode === "letter"
+                      ? "LETTER"
+                      : gameMode === "sevenRush"
+                        ? "SIXRUSH"
+                        : gameMode === "alphabet"
+                          ? "ALPHABET"
+                          : gameMode === "zen"
+                            ? "ZEN MODE"
+                            : gameMode === "startEnd"
+                              ? "START / END"
+                              : gameMode === "daily"
+                                ? "DAILY"
+                                : gameMode === "anagram"
+                                  ? "ANAGRAM"
+                                  : gameMode === "wordChange"
+                                    ? "WORD CHANGE"
+                                    : isMathMode(gameMode)
+                                      ? "MATH"
+                                      : "TIME LEFT"}
                 </small>
 
                 {/* Timed: seconds left for this word (turns red at 3s or less) */}
@@ -2775,6 +2896,15 @@ export default function App() {
                   {/* The steps so far, starting from the given word */}
                   <p>{[wcStart, ...wcChain].join(" → ")}</p>
                 </>
+              ) : gameMode === "letter" ? (
+                <>
+                  <small>TYPE THE LETTER SHOWN · {rushWords} OF 10</small>
+                  <strong>{prompt.toUpperCase()}</strong>
+                  <p>
+                    type the matching letter. no enter needed. repeated letters
+                    can appear.
+                  </p>
+                </>
               ) : gameMode === "startEnd" ? (
                 <>
                   <small>START WITH / END WITH</small>
@@ -2814,7 +2944,11 @@ export default function App() {
               }
             >
               <label htmlFor="word">
-                {isMathMode(gameMode) ? "your answer" : "your word"}
+                {gameMode === "letter"
+                  ? "type the matching letter"
+                  : isMathMode(gameMode)
+                    ? "your answer"
+                    : "your word"}
               </label>
 
               {/* Text box (letters only, auto-lowercased) and the enter button.
@@ -2848,7 +2982,7 @@ export default function App() {
                       : "type a word..."
                   }
                 />
-                <button type="submit">enter</button>
+                {gameMode !== "letter" && <button type="submit">enter</button>}
               </div>
 
               {/* Feedback line: "good word!", validation errors, or the missed-

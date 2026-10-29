@@ -8,6 +8,7 @@ const DEVICE_KEY = "wordtimer_device";
 export type RankedMode =
   | "timed"
   | "rush"
+  | "letter"
   | "alphabet"
   | "sevenRush"
   | "startEnd"
@@ -34,6 +35,7 @@ const DIFFICULTY_LABELS: Record<string, string> = {
 const MODE_LABELS: Record<RankedMode, string> = {
   timed: "timed",
   rush: "rush",
+  letter: "letter",
   alphabet: "alphabet",
   sevenRush: "sixrush",
   startEnd: "start/end",
@@ -48,6 +50,7 @@ export function isRankedMode(mode: string): mode is RankedMode {
   return (
     mode === "timed" ||
     mode === "rush" ||
+    mode === "letter" ||
     mode === "alphabet" ||
     mode === "sevenRush" ||
     mode === "startEnd" ||
@@ -64,7 +67,10 @@ export function isRankedMode(mode: string): mode is RankedMode {
 // below pins these to "superEasy" so they all share one board instead of
 // splitting into separate easy and hard boards.
 const noDifficulty = (mode: RankedMode) =>
-  mode === "daily" || mode === "anagram" || mode === "wordChange";
+  mode === "letter" ||
+  mode === "daily" ||
+  mode === "anagram" ||
+  mode === "wordChange";
 
 async function rpc<T>(fn: string, args: Record<string, unknown>): Promise<T> {
   const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
@@ -245,6 +251,7 @@ function formatScore(mode: RankedMode, score: number) {
 function formatModeTitle(mode: RankedMode, difficulty: string) {
   if (
     mode === "startEnd" ||
+    mode === "letter" ||
     mode === "mathEasy" ||
     mode === "mathMed" ||
     mode === "daily" ||
